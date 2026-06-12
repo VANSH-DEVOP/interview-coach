@@ -1,0 +1,75 @@
+import uuid
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Query, status
+
+from app.api.deps import CurrentUser, get_interview_service
+from app.models.interview_session import SessionStatus
+from app.schemas.common import Page, PageParams
+from app.schemas.interview import (
+    AnswerCreate,
+    AnswerRead,
+    InterviewCreate,
+    InterviewDetail,
+    InterviewRead,
+)
+from app.services.interview_service import InterviewService
+
+router = APIRouter(prefix="/interviews", tags=["interviews"])
+
+InterviewSvc = Annotated[InterviewService, Depends(get_interview_service)]
+
+
+@router.post("", response_model=InterviewRead, status_code=status.HTTP_201_CREATED)
+async def create_interview(
+    payload: InterviewCreate, current_user: CurrentUser, interviews: InterviewSvc
+) -> InterviewRead:
+    session = await interviews.create(current_user.id, payload)
+    return InterviewRead.model_validate(session)
+
+
+@router.get("", response_model=Page[InterviewRead])
+async def list_interviews(
+    current_user: CurrentUser,
+    interviews: InterviewSvc,
+    params: Annotated[PageParams, Depends()],
+    status_filter: Annotated[SessionStatus | None, Query(alias="status")] = None,
+) -> Page[InterviewRead]:
+    items, total = await interviews.list(
+        current_user.id, status=status_filter, offset=params.offset, limit=params.size
+    )
+    return Page(
+        items=[InterviewRead.model_validate(s) for s in items],
+        total=total,
+        page=params.page,
+        size=params.size,
+    )
+
+
+@router.get("/{session_id}", response_model=InterviewDetail)
+async def get_interview(
+    session_id: uuid.UUID, current_user: CurrentUser, interviews: InterviewSvc
+) -> InterviewDetail:
+    session = await interviews.get_detail(session_id, current_user.id)
+    return InterviewDetail.model_validate(session)
+
+
+@router.post(
+    "/{session_id}/answers", response_model=AnswerRead, status_code=status.HTTP_201_CREATED
+)
+async def submit_answer(
+    session_id: uuid.UUID,
+    payload: AnswerCreate,
+    current_user: CurrentUser,
+    interviews: InterviewSvc,
+) -> AnswerRead:
+    answer = await interviews.submit_answer(session_id, current_user.id, payload)
+    return AnswerRead.model_validate(answer)
+
+
+@router.post("/{session_id}/complete", response_model=InterviewRead)
+async def complete_interview(
+    session_id: uuid.UUID, current_user: CurrentUser, interviews: InterviewSvc
+) -> InterviewRead:
+    session = await interviews.complete(session_id, current_user.id)
+    return InterviewRead.model_validate(session)
