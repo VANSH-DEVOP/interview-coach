@@ -4,6 +4,7 @@ Depends on the StorageService ABSTRACTION only: swapping local disk for
 S3/R2/MinIO requires zero changes here.
 """
 
+import logging
 import uuid
 from pathlib import PurePosixPath
 
@@ -12,6 +13,9 @@ from app.core.exceptions import NotFoundError, PayloadTooLargeError, ValidationE
 from app.models.resume import Resume, ResumeStatus
 from app.repositories.resume_repository import ResumeRepository
 from app.services.storage.base import StorageService
+from app.services.resume_parser import ResumeParser
+
+logger = logging.getLogger(__name__)
 
 _EXTENSION_BY_CONTENT_TYPE = {
     "application/pdf": ".pdf",
@@ -42,13 +46,25 @@ class ResumeService:
         key = f"resumes/{user_id}/{uuid.uuid4().hex}{extension}"
         stored = await self.storage.save(key, content, content_type)
 
+        # Parse resume text
+        parsed_text = None
+        status = ResumeStatus.UPLOADED
+        try:
+            parsed_text = ResumeParser.parse(content, content_type)
+            status = ResumeStatus.PARSED
+            logger.info(f"Successfully parsed resume {file_name} for user {user_id}")
+        except ValueError as e:
+            logger.warning(f"Failed to parse resume {file_name}: {e}")
+            status = ResumeStatus.FAILED
+
         resume = Resume(
             user_id=user_id,
             file_name=PurePosixPath(file_name).name[:255],  # strip any client path
             storage_key=stored.key,
             content_type=stored.content_type,
             size_bytes=stored.size_bytes,
-            status=ResumeStatus.UPLOADED,
+            parsed_text=parsed_text,
+            status=status,
         )
         return await self.resumes.add(resume)
 
