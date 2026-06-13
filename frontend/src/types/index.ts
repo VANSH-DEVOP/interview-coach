@@ -61,13 +61,25 @@ export interface InterviewSessionDetail extends InterviewSession {
 
 export type ReportStatus = "pending" | "generating" | "completed" | "failed";
 
+export interface PerQuestionFeedback {
+  question: string;
+  answered?: boolean;
+  feedback: string;
+}
+
+export interface ReportFeedback {
+  summary?: string;
+  recommendations?: string[];
+  per_question?: PerQuestionFeedback[];
+}
+
 export interface EvaluationReport {
   id: string;
   session_id: string;
   overall_score: string | null;
-  strengths: unknown[] | null;
-  weaknesses: unknown[] | null;
-  detailed_feedback: Record<string, unknown> | null;
+  strengths: string[] | null;
+  weaknesses: string[] | null;
+  detailed_feedback: ReportFeedback | null;
   status: ReportStatus;
   created_at: string;
 }

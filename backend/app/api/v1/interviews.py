@@ -13,6 +13,7 @@ from app.schemas.interview import (
     InterviewDetail,
     InterviewRead,
 )
+from app.schemas.report import ReportRead
 from app.services.interview_service import InterviewService
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
@@ -73,3 +74,11 @@ async def complete_interview(
 ) -> InterviewRead:
     session = await interviews.complete(session_id, current_user.id)
     return InterviewRead.model_validate(session)
+
+
+@router.post("/{session_id}/reevaluate", response_model=ReportRead)
+async def reevaluate_interview(
+    session_id: uuid.UUID, current_user: CurrentUser, interviews: InterviewSvc
+) -> ReportRead:
+    report = await interviews.reevaluate(session_id, current_user.id)
+    return ReportRead.model_validate(report)

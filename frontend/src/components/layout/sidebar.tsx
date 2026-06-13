@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  BarChart3,
   FileText,
   LayoutDashboard,
   LogOut,
@@ -15,8 +16,9 @@ import { Button } from "@/components/ui/button";
 
 export const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/resumes", label: "Resumes", icon: FileText },
   { href: "/interviews", label: "Interviews", icon: MessageSquare },
-  { href: "/reports", label: "Reports", icon: FileText },
+  { href: "/reports", label: "Reports", icon: BarChart3 },
   { href: "/profile", label: "Profile", icon: UserIcon },
 ] as const;
 

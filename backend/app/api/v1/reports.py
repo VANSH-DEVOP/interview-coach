@@ -31,6 +31,16 @@ async def list_reports(
     )
 
 
+@router.get("/by-session/{session_id}", response_model=ReportRead)
+async def get_report_by_session(
+    session_id: uuid.UUID, current_user: CurrentUser, reports: ReportRepo
+) -> ReportRead:
+    report = await reports.get_owned_by_session(session_id, current_user.id)
+    if report is None:
+        raise NotFoundError("No report exists for this session yet.")
+    return ReportRead.model_validate(report)
+
+
 @router.get("/{report_id}", response_model=ReportRead)
 async def get_report(
     report_id: uuid.UUID, current_user: CurrentUser, reports: ReportRepo

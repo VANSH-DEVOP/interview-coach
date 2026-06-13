@@ -1,0 +1,192 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
+import Link from "next/link";
+import { CheckCircle2, ChevronRight } from "lucide-react";
+
+import { api, ApiError } from "@/lib/api-client";
+import type { Answer, InterviewSessionDetail, Question } from "@/types";
+import { PageHeader } from "@/components/shared/page-header";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
+
+export default function InterviewSessionPage() {
+  const router = useRouter();
+  const params = useParams<{ sessionId: string }>();
+  const sessionId = params.sessionId;
+
+  const [session, setSession] = useState<InterviewSessionDetail | null>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCompleting, setIsCompleting] = useState(false);
+
+  const load = useCallback(async () => {
+    const data = await api.get<InterviewSessionDetail>(`/interviews/${sessionId}`);
+    setSession(data);
+    // Jump to the first unanswered question.
+    const firstUnanswered = data.questions.findIndex((q) => q.answer === null);
+    setActiveIndex(firstUnanswered === -1 ? data.questions.length - 1 : firstUnanswered);
+  }, [sessionId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const questions = session?.questions ?? [];
+  const activeQuestion: Question | undefined = questions[activeIndex];
+  const answeredCount = useMemo(
+    () => questions.filter((q) => q.answer !== null).length,
+    [questions]
+  );
+  const isCompleted = session?.status === "completed";
+
+  async function handleSubmitAnswer() {
+    if (!activeQuestion || !draft.trim()) return;
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      const answer = await api.post<Answer>(`/interviews/${sessionId}/answers`, {
+        question_id: activeQuestion.id,
+        content: draft.trim(),
+      });
+      // Reflect locally, then reload to pick up any AI follow-up question.
+      setDraft("");
+      setSession((prev) =>
+        prev
+          ? {
+              ...prev,
+              questions: prev.questions.map((q) =>
+                q.id === activeQuestion.id ? { ...q, answer } : q
+              ),
+            }
+          : prev
+      );
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Unable to submit your answer.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  function handleNext() {
+    setDraft("");
+    setError(null);
+    setActiveIndex((i) => Math.min(i + 1, questions.length - 1));
+  }
+
+  async function handleComplete() {
+    setError(null);
+    setIsCompleting(true);
+    try {
+      await api.post(`/interviews/${sessionId}/complete`);
+      router.push(`/interviews/${sessionId}/report`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Unable to end the interview.");
+      setIsCompleting(false);
+    }
+  }
+
+  if (!session) {
+    return <p className="text-sm text-muted-foreground">Loading session…</p>;
+  }
+
+  return (
+    <>
+      <PageHeader
+        title={session.title}
+        description={session.target_role ?? "General interview"}
+        actions={
+          <Badge variant={isCompleted ? "success" : "secondary"}>
+            {session.status.replace("_", " ")}
+          </Badge>
+        }
+      />
+
+      <p className="text-sm text-muted-foreground">
+        {answeredCount} of {questions.length} questions answered
+      </p>
+
+      {isCompleted ? (
+        <Card>
+          <CardContent className="flex flex-col items-center gap-4 py-12 text-center">
+            <CheckCircle2 className="h-10 w-10 text-primary" aria-hidden />
+            <div>
+              <p className="font-medium">This interview is complete.</p>
+              <p className="text-sm text-muted-foreground">
+                Your evaluation report is ready.
+              </p>
+            </div>
+            <Link href={`/interviews/${sessionId}/report`}>
+              <Button>View report</Button>
+            </Link>
+          </CardContent>
+        </Card>
+      ) : activeQuestion ? (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base">
+                Question {activeIndex + 1} of {questions.length}
+              </CardTitle>
+              <Badge variant="outline">{activeQuestion.question_type.replace("_", " ")}</Badge>
+            </div>
+            <CardDescription className="pt-2 text-base text-foreground">
+              {activeQuestion.content}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {activeQuestion.answer ? (
+              <div className="rounded-md border bg-secondary/50 p-3">
+                <p className="text-xs font-medium text-muted-foreground">Your answer</p>
+                <p className="mt-1 text-sm">{activeQuestion.answer.content}</p>
+              </div>
+            ) : (
+              <Textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                placeholder="Type your answer here…"
+                aria-label="Your answer"
+              />
+            )}
+
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              {!activeQuestion.answer && (
+                <Button onClick={handleSubmitAnswer} disabled={isSubmitting || !draft.trim()}>
+                  {isSubmitting ? "Submitting…" : "Submit answer"}
+                </Button>
+              )}
+              {activeIndex < questions.length - 1 && (
+                <Button variant="outline" onClick={handleNext}>
+                  Next question
+                  <ChevronRight className="h-4 w-4" aria-hidden />
+                </Button>
+              )}
+              <Button
+                variant="destructive"
+                className="ml-auto"
+                onClick={handleComplete}
+                disabled={isCompleting}
+              >
+                {isCompleting ? "Ending…" : "End interview"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : (
+        <p className="text-sm text-muted-foreground">No questions were generated.</p>
+      )}
+    </>
+  );
+}

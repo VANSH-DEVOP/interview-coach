@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { MessageSquare } from "lucide-react";
 
 import { api, ApiError } from "@/lib/api-client";
-import type { InterviewSession, Page } from "@/types";
+import type { InterviewSession, Page, Resume } from "@/types";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Badge } from "@/components/ui/badge";
@@ -12,15 +14,23 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 
 export default function InterviewsPage() {
+  const router = useRouter();
   const [sessions, setSessions] = useState<Page<InterviewSession> | null>(null);
+  const [resumes, setResumes] = useState<Resume[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const load = useCallback(async () => {
-    setSessions(await api.get<Page<InterviewSession>>("/interviews?page=1&size=20"));
+    const [sessionsPage, resumesPage] = await Promise.all([
+      api.get<Page<InterviewSession>>("/interviews?page=1&size=20"),
+      api.get<Page<Resume>>("/resumes?page=1&size=50"),
+    ]);
+    setSessions(sessionsPage);
+    setResumes(resumesPage.items);
   }, []);
 
   useEffect(() => {
@@ -33,16 +43,16 @@ export default function InterviewsPage() {
     setIsSubmitting(true);
 
     const form = new FormData(event.currentTarget);
+    const resumeId = String(form.get("resume_id"));
     try {
-      await api.post<InterviewSession>("/interviews", {
+      const session = await api.post<InterviewSession>("/interviews", {
         title: String(form.get("title")),
         target_role: String(form.get("target_role")) || null,
+        resume_id: resumeId || null,
       });
-      setShowForm(false);
-      await load();
+      router.push(`/interviews/${session.id}`);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Unable to create the session.");
-    } finally {
       setIsSubmitting(false);
     }
   }
@@ -64,7 +74,7 @@ export default function InterviewsPage() {
           <CardHeader>
             <CardTitle className="text-base">New interview session</CardTitle>
             <CardDescription>
-              Adaptive AI questioning will use this context once enabled.
+              Questions are generated from the target role and selected resume.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -76,6 +86,26 @@ export default function InterviewsPage() {
               <div className="space-y-2">
                 <Label htmlFor="target_role">Target role (optional)</Label>
                 <Input id="target_role" name="target_role" placeholder="e.g. Senior Software Engineer" />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="resume_id">Resume (optional)</Label>
+                <Select id="resume_id" name="resume_id" defaultValue="">
+                  <option value="">No resume</option>
+                  {resumes.map((resume) => (
+                    <option key={resume.id} value={resume.id}>
+                      {resume.file_name}
+                    </option>
+                  ))}
+                </Select>
+                {resumes.length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    No resumes yet.{" "}
+                    <Link href="/resumes" className="text-primary underline">
+                      Upload one
+                    </Link>{" "}
+                    for tailored questions.
+                  </p>
+                )}
               </div>
 
               {error && (
@@ -102,22 +132,24 @@ export default function InterviewsPage() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2">
           {sessions?.items.map((session) => (
-            <Card key={session.id}>
-              <CardHeader className="flex flex-row items-start justify-between space-y-0">
-                <div>
-                  <CardTitle className="text-base">{session.title}</CardTitle>
-                  <CardDescription>{session.target_role ?? "General interview"}</CardDescription>
-                </div>
-                <Badge variant={session.status === "completed" ? "success" : "secondary"}>
-                  {session.status.replace("_", " ")}
-                </Badge>
-              </CardHeader>
-              <CardContent>
-                <p className="text-xs text-muted-foreground">
-                  Created {new Date(session.created_at).toLocaleString()}
-                </p>
-              </CardContent>
-            </Card>
+            <Link key={session.id} href={`/interviews/${session.id}`} className="block">
+              <Card className="transition-colors hover:border-primary">
+                <CardHeader className="flex flex-row items-start justify-between space-y-0">
+                  <div>
+                    <CardTitle className="text-base">{session.title}</CardTitle>
+                    <CardDescription>{session.target_role ?? "General interview"}</CardDescription>
+                  </div>
+                  <Badge variant={session.status === "completed" ? "success" : "secondary"}>
+                    {session.status.replace("_", " ")}
+                  </Badge>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-xs text-muted-foreground">
+                    Created {new Date(session.created_at).toLocaleString()}
+                  </p>
+                </CardContent>
+              </Card>
+            </Link>
           ))}
         </div>
       )}

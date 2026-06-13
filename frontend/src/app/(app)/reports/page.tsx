@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { BarChart3 } from "lucide-react";
 
 import { api } from "@/lib/api-client";
@@ -41,26 +42,28 @@ export default function ReportsPage() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2">
           {reports?.items.map((report) => (
-            <Card key={report.id}>
-              <CardHeader className="flex flex-row items-start justify-between space-y-0">
-                <div>
-                  <CardTitle className="text-base">
-                    {report.overall_score !== null
-                      ? `Score: ${report.overall_score}`
-                      : "Awaiting evaluation"}
-                  </CardTitle>
-                  <CardDescription>
-                    {new Date(report.created_at).toLocaleString()}
-                  </CardDescription>
-                </div>
-                <Badge variant={STATUS_VARIANT[report.status]}>{report.status}</Badge>
-              </CardHeader>
-              <CardContent>
-                <p className="text-xs text-muted-foreground">
-                  Detailed AI feedback becomes available once evaluation completes.
-                </p>
-              </CardContent>
-            </Card>
+            <Link key={report.id} href={`/reports/${report.id}`} className="block">
+              <Card className="transition-colors hover:border-primary">
+                <CardHeader className="flex flex-row items-start justify-between space-y-0">
+                  <div>
+                    <CardTitle className="text-base">
+                      {report.overall_score !== null
+                        ? `Score: ${report.overall_score} / 10`
+                        : "Awaiting evaluation"}
+                    </CardTitle>
+                    <CardDescription>
+                      {new Date(report.created_at).toLocaleString()}
+                    </CardDescription>
+                  </div>
+                  <Badge variant={STATUS_VARIANT[report.status]}>{report.status}</Badge>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-xs text-muted-foreground">
+                    View detailed strengths, weaknesses, and recommendations.
+                  </p>
+                </CardContent>
+              </Card>
+            </Link>
           ))}
         </div>
       )}

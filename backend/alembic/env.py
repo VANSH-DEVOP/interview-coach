@@ -1,9 +1,11 @@
 """Alembic environment: wires application settings and metadata."""
 
+import asyncio
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 from app.db.base import Base
@@ -29,18 +31,26 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-def run_migrations_online() -> None:
-    connectable = engine_from_config(
+async def run_async_migrations() -> None:
+    connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
+        poolclass=NullPool,
     )
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata, compare_type=True
+    async with connectable.connect() as connection:
+        await connection.run_sync(
+            lambda conn: context.configure(
+                connection=conn, target_metadata=target_metadata, compare_type=True
+            )
         )
-        with context.begin_transaction():
-            context.run_migrations()
+        async with connection.begin():
+            await connection.run_sync(lambda conn: context.run_migrations())
+
+    await connectable.dispose()
+
+
+def run_migrations_online() -> None:
+    asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():

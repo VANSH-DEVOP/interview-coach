@@ -21,6 +21,7 @@ from app.repositories.report_repository import ReportRepository
 from app.repositories.resume_repository import ResumeRepository
 from app.repositories.user_repository import UserRepository
 from app.services.ai.base import get_question_generator
+from app.services.ai.evaluator import get_evaluator
 from app.services.auth_service import AuthService
 from app.services.interview_service import InterviewService
 from app.services.resume_service import ResumeService
@@ -71,8 +72,11 @@ def get_resume_service(
 def get_interview_service(
     interviews: Annotated[InterviewRepository, Depends(get_interview_repository)],
     resumes: Annotated[ResumeRepository, Depends(get_resume_repository)],
+    reports: Annotated[ReportRepository, Depends(get_report_repository)],
 ) -> InterviewService:
-    return InterviewService(interviews, resumes, get_question_generator())
+    return InterviewService(
+        interviews, resumes, get_question_generator(), get_evaluator(), reports
+    )
 
 
 # -- Authentication -------------------------------------------------------------

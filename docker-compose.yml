@@ -16,7 +16,7 @@ services:
       timeout: 5s
       retries: 10
     ports:
-      - "5432:5432"
+      - "5434:5432"
 
   backend:
     build: ./backend
@@ -31,6 +31,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-interviewpilot}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-insecure-local-dev-key-override-me}
       CORS_ORIGINS: '["http://localhost:3000"]'
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-1.5-flash}
       STORAGE_BACKEND: local
       STORAGE_LOCAL_PATH: /var/lib/interviewpilot/storage
     volumes:

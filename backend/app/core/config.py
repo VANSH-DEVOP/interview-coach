@@ -41,11 +41,17 @@ class Settings(BaseSettings):
 
     @property
     def sync_database_url(self) -> str:
-        """Synchronous URL used exclusively by Alembic."""
+        """Synchronous-style URL used by Alembic (asyncpg driver, run via async runner)."""
         return (
-            f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
+
+    # -- AI provider ----------------------------------------------------------
+    # When set, the Gemini-backed generator/evaluator activate; otherwise the
+    # app falls back to deterministic local implementations (no key required).
+    GEMINI_API_KEY: str | None = None
+    GEMINI_MODEL: str = "gemini-1.5-flash"
 
     # -- Security ------------------------------------------------------------
     JWT_SECRET_KEY: str = "insecure-local-dev-key-override-me"

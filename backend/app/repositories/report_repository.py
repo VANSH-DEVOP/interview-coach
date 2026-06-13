@@ -20,6 +20,19 @@ class ReportRepository(BaseRepository[EvaluationReport]):
         )
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
+    async def get_owned_by_session(
+        self, session_id: uuid.UUID, user_id: uuid.UUID
+    ) -> EvaluationReport | None:
+        stmt = (
+            select(EvaluationReport)
+            .join(InterviewSession, EvaluationReport.session_id == InterviewSession.id)
+            .where(
+                EvaluationReport.session_id == session_id,
+                InterviewSession.user_id == user_id,
+            )
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
     async def list_for_user(
         self, user_id: uuid.UUID, *, offset: int, limit: int
     ) -> tuple[list[EvaluationReport], int]:
