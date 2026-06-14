@@ -77,7 +77,9 @@ class InterviewService:
         session = await self.interviews.add(session)
 
         generated = await self.question_generator.initial_questions(
-            target_role=payload.target_role, resume_text=resume_text
+            target_role=payload.target_role,
+            resume_text=resume_text,
+            resume_id=payload.resume_id,
         )
         for index, item in enumerate(generated, start=1):
             self.interviews.session.add(

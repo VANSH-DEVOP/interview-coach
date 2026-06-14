@@ -5,9 +5,13 @@ interfaces. Services depend on the abstractions only, so wiring in real AI is
 additive: implement a provider, register it in a factory, done.
 """
 
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.services.ai.rag import RAGService
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,7 +26,11 @@ class QuestionGenerator(ABC):
 
     @abstractmethod
     async def initial_questions(
-        self, *, target_role: str | None, resume_text: str | None
+        self,
+        *,
+        target_role: str | None,
+        resume_text: str | None,
+        resume_id: uuid.UUID | None = None,
     ) -> list[GeneratedQuestion]: ...
 
     @abstractmethod
@@ -41,7 +49,11 @@ class StaticQuestionGenerator(QuestionGenerator):
     )
 
     async def initial_questions(
-        self, *, target_role: str | None, resume_text: str | None
+        self,
+        *,
+        target_role: str | None,
+        resume_text: str | None,
+        resume_id: uuid.UUID | None = None,
     ) -> list[GeneratedQuestion]:
         return [
             GeneratedQuestion(content=c, question_type=t, metadata={"source": "static"})
@@ -67,15 +79,19 @@ class FallbackQuestionGenerator(QuestionGenerator):
         self._fallback = fallback
 
     async def initial_questions(
-        self, *, target_role: str | None, resume_text: str | None
+        self,
+        *,
+        target_role: str | None,
+        resume_text: str | None,
+        resume_id: uuid.UUID | None = None,
     ) -> list[GeneratedQuestion]:
         try:
             return await self._primary.initial_questions(
-                target_role=target_role, resume_text=resume_text
+                target_role=target_role, resume_text=resume_text, resume_id=resume_id
             )
         except Exception:  # noqa: BLE001 - any provider failure -> safe fallback
             return await self._fallback.initial_questions(
-                target_role=target_role, resume_text=resume_text
+                target_role=target_role, resume_text=resume_text, resume_id=resume_id
             )
 
     async def follow_up(
@@ -91,11 +107,14 @@ class FallbackQuestionGenerator(QuestionGenerator):
             )
 
 
-def get_question_generator() -> QuestionGenerator:
+def get_question_generator(rag_service: "RAGService | None" = None) -> QuestionGenerator:
     """Factory.
 
     Returns a Gemini-backed generator (with static fallback) when
     GEMINI_API_KEY is configured; otherwise the deterministic static generator.
+    
+    Args:
+        rag_service: Optional RAG service for retrieving relevant resume context.
     """
     from app.core.config import get_settings
 
@@ -106,6 +125,6 @@ def get_question_generator() -> QuestionGenerator:
 
         client = GeminiClient(settings.GEMINI_API_KEY, settings.GEMINI_MODEL)
         return FallbackQuestionGenerator(
-            GeminiQuestionGenerator(client), StaticQuestionGenerator()
+            GeminiQuestionGenerator(client, rag_service=rag_service), StaticQuestionGenerator()
         )
     return StaticQuestionGenerator()

@@ -7,6 +7,7 @@ S3/R2/MinIO requires zero changes here.
 import logging
 import uuid
 from pathlib import PurePosixPath
+from typing import TYPE_CHECKING
 
 from app.core.config import get_settings
 from app.core.exceptions import NotFoundError, PayloadTooLargeError, ValidationError
@@ -14,6 +15,9 @@ from app.models.resume import Resume, ResumeStatus
 from app.repositories.resume_repository import ResumeRepository
 from app.services.storage.base import StorageService
 from app.services.resume_parser import ResumeParser
+
+if TYPE_CHECKING:
+    from app.services.ai.rag import RAGService
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +28,15 @@ _EXTENSION_BY_CONTENT_TYPE = {
 
 
 class ResumeService:
-    def __init__(self, resumes: ResumeRepository, storage: StorageService) -> None:
+    def __init__(
+        self,
+        resumes: ResumeRepository,
+        storage: StorageService,
+        rag_service: "RAGService | None" = None,
+    ) -> None:
         self.resumes = resumes
         self.storage = storage
+        self.rag_service = rag_service
 
     async def upload(
         self, *, user_id: uuid.UUID, file_name: str, content: bytes, content_type: str
@@ -66,7 +76,22 @@ class ResumeService:
             parsed_text=parsed_text,
             status=status,
         )
-        return await self.resumes.add(resume)
+        resume = await self.resumes.add(resume)
+
+        # Index resume for RAG retrieval if available and parsing succeeded
+        if self.rag_service and parsed_text:
+            try:
+                chunk_count = await self.rag_service.index_resume(
+                    resume.id, user_id, parsed_text
+                )
+                logger.info(
+                    f"Indexed resume {resume.id} with {chunk_count} chunks for RAG retrieval"
+                )
+            except Exception as e:
+                # Non-blocking: RAG indexing failure doesn't prevent upload
+                logger.error(f"Failed to index resume {resume.id} for RAG: {e}")
+
+        return resume
 
     async def list(self, user_id: uuid.UUID, *, offset: int, limit: int):
         return await self.resumes.list_for_user(user_id, offset=offset, limit=limit)
@@ -87,3 +112,10 @@ class ResumeService:
         # DB row first (authoritative), then blob; orphan blobs are reclaimable.
         await self.resumes.delete(resume)
         await self.storage.delete(resume.storage_key)
+        
+        # Remove from vector store if available
+        if self.rag_service:
+            try:
+                await self.rag_service.delete_index(resume_id)
+            except Exception as e:
+                logger.error(f"Failed to delete resume {resume_id} from vector store: {e}")
