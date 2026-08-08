@@ -8,8 +8,6 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
-import chromadb
-
 logger = logging.getLogger(__name__)
 
 
@@ -62,6 +60,18 @@ class ChromaVectorStore(VectorStore):
         Args:
             persist_directory: Path to persist ChromaDB data. If None, uses in-memory.
         """
+        # Imported here, not at module scope: chromadb pulls in a heavy dependency
+        # tree, and `app.api.deps` imports this module transitively. A module-level
+        # import makes the whole app (and the test suite) unimportable when the RAG
+        # extra is missing, instead of just disabling RAG.
+        try:
+            import chromadb
+        except ImportError as e:  # pragma: no cover - depends on install extras
+            raise VectorStoreError(
+                "chromadb is not installed; install it to enable RAG "
+                '(pip install -e ".[dev]")'
+            ) from e
+
         try:
             if persist_directory:
                 # Use new Chroma client with persistent storage
