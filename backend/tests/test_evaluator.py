@@ -149,6 +149,71 @@ async def test_gemini_evaluator_synthesises_missing_summary():
     assert "6" in summary and "Backend" in summary
 
 
+async def test_gemini_evaluator_parses_per_question_scores():
+    client = _FakeClient(
+        payload={
+            "overall_score": 7,
+            "per_question": [
+                {"question": "Q1", "score": 8.5, "feedback": "Strong"},
+                {"question": "Q2", "score": 3, "feedback": "Thin"},
+            ],
+        }
+    )
+    result = await GeminiEvaluator(client).evaluate(target_role=None, transcript=[])
+    per_q = result.detailed_feedback["per_question"]
+    assert [p["score"] for p in per_q] == [8.5, 3.0]
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (8, 8.0),
+        ("7", 7.0),
+        ("8.5/10", 8.5),  # models like writing "8.5/10"
+        (42, 10.0),  # clamped
+        (-3, 0.0),  # clamped
+        (None, None),  # absent stays absent, not zero
+        ("great", None),  # unparseable stays absent
+    ],
+)
+async def test_gemini_evaluator_coerces_per_question_scores(raw, expected):
+    client = _FakeClient(
+        payload={"per_question": [{"question": "Q", "score": raw, "feedback": "f"}]}
+    )
+    result = await GeminiEvaluator(client).evaluate(target_role=None, transcript=[])
+    assert result.detailed_feedback["per_question"][0]["score"] == expected
+
+
+async def test_gemini_evaluator_reads_per_question_score_aliases():
+    client = _FakeClient(
+        payload={"per_question": [{"question": "Q", "rating": 6, "comment": "ok"}]}
+    )
+    result = await GeminiEvaluator(client).evaluate(target_role=None, transcript=[])
+    entry = result.detailed_feedback["per_question"][0]
+    assert entry["score"] == 6.0
+    assert entry["feedback"] == "ok"
+
+
+async def test_gemini_evaluator_survives_a_malformed_per_question_list():
+    client = _FakeClient(payload={"per_question": "not a list"})
+    result = await GeminiEvaluator(client).evaluate(target_role=None, transcript=[])
+    assert result.detailed_feedback["per_question"] == []
+
+
+async def test_heuristic_scores_each_question():
+    transcript = [
+        QAPair(question="Q1", answer=" ".join(["word"] * 80)),  # full depth credit
+        QAPair(question="Q2", answer="Short."),
+        QAPair(question="Q3", answer=None),
+    ]
+    result = await HeuristicEvaluator().evaluate(target_role="Role", transcript=transcript)
+    scores = [p["score"] for p in result.detailed_feedback["per_question"]]
+
+    assert scores[0] == 10.0
+    assert 0 < scores[1] < 10
+    assert scores[2] == 0.0  # unanswered is a real zero, not a missing score
+
+
 async def test_gemini_evaluator_clamps_score_to_range():
     client = _FakeClient(payload={"overall_score": 42})
     result = await GeminiEvaluator(client).evaluate(target_role=None, transcript=[])

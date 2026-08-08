@@ -73,6 +73,8 @@ export type ReportStatus = "pending" | "generating" | "completed" | "failed";
 export interface PerQuestionFeedback {
   question: string;
   answered?: boolean;
+  /** 0-10 for this answer alone. Null when the model gave no usable score. */
+  score?: number | null;
   feedback: string;
 }
 

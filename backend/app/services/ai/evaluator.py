@@ -28,6 +28,45 @@ def _first(payload: dict[str, Any], keys: list[str], default: Any) -> Any:
     return default
 
 
+def _coerce_score(value: Any) -> float | None:
+    """Clamp a model-supplied score into 0-10, or None if it isn't a number.
+
+    Models return scores as ints, floats, and strings like "7/10" or "8.5".
+    Anything unparseable becomes None rather than a misleading zero -- an
+    absent score and a score of zero mean very different things to a reader.
+    """
+    if isinstance(value, str):
+        value = value.split("/")[0].strip()
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(max(0.0, min(score, 10.0)), 2)
+
+
+def _normalise_per_question(items: Any) -> list[dict[str, Any]]:
+    """Coerce the model's per-question list into a stable shape for the UI."""
+    if not isinstance(items, list):
+        return []
+
+    normalised: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        entry: dict[str, Any] = {
+            "question": str(_first(item, ["question", "prompt"], "")).strip(),
+            "feedback": str(_first(item, ["feedback", "comment", "notes"], "")).strip(),
+            "score": _coerce_score(
+                _first(item, ["score", "rating", "question_score"], None)
+            ),
+        }
+        answered = _first(item, ["answered"], None)
+        if answered is not None:
+            entry["answered"] = bool(answered)
+        normalised.append(entry)
+    return normalised
+
+
 def _as_str_list(value: Any) -> list[str]:
     """Coerce a model field into a clean list[str].
 
@@ -128,20 +167,26 @@ class HeuristicEvaluator(Evaluator):
         if not strengths:
             strengths.append("Engaged with the interview session.")
 
-        per_question = [
-            {
-                "question": qa.question,
-                "answered": bool(qa.answer and qa.answer.strip()),
-                "feedback": (
-                    "Good — consider quantifying impact with metrics."
-                    if qa.answer and len(qa.answer.split()) >= 40
-                    else "Expand with a specific example and the outcome."
-                    if qa.answer and qa.answer.strip()
-                    else "Not answered."
-                ),
-            }
-            for qa in transcript
-        ]
+        per_question = []
+        for qa in transcript:
+            words = len(qa.answer.split()) if qa.answer else 0
+            is_answered = bool(qa.answer and qa.answer.strip())
+            per_question.append(
+                {
+                    "question": qa.question,
+                    "answered": is_answered,
+                    # Same 80-word full-credit scale as the overall depth bonus,
+                    # so a per-question score is consistent with the total.
+                    "score": round(min(words / 80.0, 1.0) * 10, 2) if is_answered else 0.0,
+                    "feedback": (
+                        "Good — consider quantifying impact with metrics."
+                        if words >= 40
+                        else "Expand with a specific example and the outcome."
+                        if is_answered
+                        else "Not answered."
+                    ),
+                }
+            )
 
         return EvaluationResult(
             overall_score=Decimal(str(score)),
@@ -178,9 +223,11 @@ class GeminiEvaluator(Evaluator):
             "Score 0-10. Respond as JSON: "
             '{"overall_score": number, "summary": str, "strengths": [str], '
             '"weaknesses": [str], "recommendations": [str], "per_question": '
-            '[{"question": str, "feedback": str}]}. '
+            '[{"question": str, "score": number, "feedback": str}]}. '
             '"summary" is a 2-3 sentence overall assessment of the candidate\'s '
-            "performance, written directly to the candidate."
+            "performance, written directly to the candidate. "
+            'Each "per_question" entry needs its own 0-10 "score" for that '
+            "answer alone. Score an unanswered question 0."
             "\n\nTranscript:\n" + "\n\n".join(lines)
         )
         payload = await self._client.generate_json(
@@ -245,7 +292,7 @@ class GeminiEvaluator(Evaluator):
             detailed_feedback={
                 "summary": summary,
                 "recommendations": recommendations,
-                "per_question": payload.get("per_question", []),
+                "per_question": _normalise_per_question(payload.get("per_question")),
             },
         )
 

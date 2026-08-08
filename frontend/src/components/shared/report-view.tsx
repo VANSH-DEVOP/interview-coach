@@ -11,6 +11,13 @@ const STATUS_VARIANT: Record<EvaluationReport["status"], "success" | "secondary"
   failed: "destructive",
 };
 
+/** Colour a per-question score so weak answers are scannable at a glance. */
+function scoreVariant(score: number): "success" | "secondary" | "destructive" {
+  if (score >= 7) return "success";
+  if (score >= 4) return "secondary";
+  return "destructive";
+}
+
 function ScoreRing({ score }: { score: number }) {
   const pct = Math.max(0, Math.min(score / 10, 1)) * 100;
   return (
@@ -122,7 +129,14 @@ export function ReportView({ report }: { report: EvaluationReport }) {
           <CardContent className="space-y-4">
             {perQuestion.map((item, i) => (
               <div key={i} className="border-b pb-3 last:border-0 last:pb-0">
-                <p className="text-sm font-medium">{item.question}</p>
+                <div className="flex items-start justify-between gap-3">
+                  <p className="text-sm font-medium">{item.question}</p>
+                  {typeof item.score === "number" && (
+                    <Badge variant={scoreVariant(item.score)} className="shrink-0 tabular-nums">
+                      {item.score.toFixed(1)}
+                    </Badge>
+                  )}
+                </div>
                 <p className="mt-1 text-sm text-muted-foreground">{item.feedback}</p>
               </div>
             ))}
