@@ -19,8 +19,11 @@ COPY alembic ./alembic
 COPY alembic.ini ./
 
 # Non-root runtime user; storage root is OUTSIDE the code directory.
+# Both mount points must exist and be owned by appuser *in the image*: Docker
+# seeds a fresh named volume from the image path, so a missing directory would
+# be created as root and the non-root process could not write to it.
 RUN useradd --create-home --uid 1001 appuser \
-    && mkdir -p /var/lib/interviewpilot/storage \
+    && mkdir -p /var/lib/interviewpilot/storage /var/lib/interviewpilot/chroma \
     && chown -R appuser:appuser /var/lib/interviewpilot
 USER appuser
 

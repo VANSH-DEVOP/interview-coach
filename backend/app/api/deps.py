@@ -5,7 +5,6 @@ session → repositories → services. Routes contain zero construction logic.
 """
 
 import uuid
-from pathlib import Path
 from typing import Annotated
 
 import jwt as pyjwt
@@ -67,7 +66,7 @@ def get_rag_service() -> "RAGService | None":
     
     try:
         embedding_service = EmbeddingService(settings.GEMINI_API_KEY)
-        vector_store = get_vector_store(persist_directory=Path("/tmp/interviewpilot/chroma"))
+        vector_store = get_vector_store(persist_directory=settings.CHROMA_PATH)
         return RAGService(embedding_service, vector_store)
     except Exception:
         # Return None if RAG initialization fails; gracefully disable RAG

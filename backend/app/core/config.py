@@ -51,7 +51,13 @@ class Settings(BaseSettings):
     # When set, the Gemini-backed generator/evaluator activate; otherwise the
     # app falls back to deterministic local implementations (no key required).
     GEMINI_API_KEY: str | None = None
-    GEMINI_MODEL: str = "gemini-1.5-flash"
+    GEMINI_MODEL: str = "gemini-flash-latest"
+
+    # -- Vector store (RAG) -----------------------------------------------------
+    # Must point at durable storage. On a throwaway path (/tmp, a container
+    # layer) the resume index is lost on restart and RAG silently degrades to
+    # truncated raw resume text with no error anywhere.
+    CHROMA_PATH: Path = Path("/var/lib/interviewpilot/chroma")
 
     # -- Security ------------------------------------------------------------
     JWT_SECRET_KEY: str = "insecure-local-dev-key-override-me"

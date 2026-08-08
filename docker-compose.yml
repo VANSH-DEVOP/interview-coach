@@ -32,12 +32,15 @@ services:
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-insecure-local-dev-key-override-me}
       CORS_ORIGINS: '["http://localhost:3000"]'
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-1.5-flash}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
+      CHROMA_PATH: /var/lib/interviewpilot/chroma
       STORAGE_BACKEND: local
       STORAGE_LOCAL_PATH: /var/lib/interviewpilot/storage
     volumes:
       # Resume blobs live OUTSIDE the application code, on a named volume.
       - resume_storage:/var/lib/interviewpilot/storage
+      # The RAG index must survive restarts, or every resume needs re-uploading.
+      - chroma_data:/var/lib/interviewpilot/chroma
     depends_on:
       db:
         condition: service_healthy
@@ -58,3 +61,4 @@ services:
 volumes:
   postgres_data:
   resume_storage:
+  chroma_data:
