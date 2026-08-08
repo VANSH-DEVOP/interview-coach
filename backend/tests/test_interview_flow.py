@@ -19,7 +19,8 @@ from app.models.evaluation_report import EvaluationReport, ReportStatus
 from app.models.interview_session import InterviewSession, SessionStatus
 from app.models.question import Question
 from app.schemas.interview import AnswerCreate, InterviewCreate
-from app.services.ai.base import StaticQuestionGenerator
+from app.models.resume import Resume
+from app.services.ai.base import GeneratedQuestion, QuestionGenerator, StaticQuestionGenerator
 from app.services.ai.evaluator import HeuristicEvaluator
 from app.services.interview_service import InterviewService
 
@@ -75,16 +76,26 @@ class _FakeInterviewRepository:
         self._sessions[entity.id] = entity
         return entity
 
+    def _questions_for(self, session_id):
+        return sorted(
+            (q for q in self.session.questions.values() if q.session_id == session_id),
+            key=lambda q: q.sequence_number,
+        )
+
     async def get_owned(self, session_id, user_id, *, with_questions=False):
         session = self._sessions.get(session_id)
         if session is None or session.user_id != user_id:
             return None
-        # Reflect any questions added to the unit of work.
-        session.questions = sorted(
-            (q for q in self.session.questions.values() if q.session_id == session_id),
-            key=lambda q: q.sequence_number,
-        )
+        # Mirror the real repository: questions are only populated when the
+        # caller asks for them. The real one uses selectinload, and touching
+        # the relationship without it raises MissingGreenlet under asyncio --
+        # so a fake that always populates would hide that bug.
+        session.questions = self._questions_for(session_id) if with_questions else []
         return session
+
+    async def next_sequence_number(self, session_id):
+        existing = self._questions_for(session_id)
+        return max((q.sequence_number for q in existing), default=0) + 1
 
     async def get_question(self, question_id, session_id):
         question = self.session.questions.get(question_id)
@@ -94,8 +105,11 @@ class _FakeInterviewRepository:
 
 
 class _FakeResumeRepository:
-    async def get_owned(self, resume_id, user_id):  # pragma: no cover - unused path
-        return None
+    def __init__(self, resumes=None) -> None:
+        self._resumes = resumes or {}
+
+    async def get_owned(self, resume_id, user_id):
+        return self._resumes.get(resume_id)
 
 
 class _FakeReportRepository:
@@ -121,6 +135,121 @@ def service() -> InterviewService:
         HeuristicEvaluator(),
         reports,
     )
+
+
+class _RecordingFollowUpGenerator(StaticQuestionGenerator):
+    """Static questions, but always emits a follow-up and records its inputs."""
+
+    def __init__(self) -> None:
+        self.follow_up_calls: list[dict] = []
+
+    async def follow_up(self, *, question, answer, resume_text, resume_id=None):
+        self.follow_up_calls.append(
+            {
+                "question": question,
+                "answer": answer,
+                "resume_text": resume_text,
+                "resume_id": resume_id,
+            }
+        )
+        return GeneratedQuestion(
+            content=f"Can you say more about: {answer[:20]}?",
+            question_type="follow_up",
+            metadata={"source": "test"},
+        )
+
+
+def _service_with(generator: QuestionGenerator, resumes=None) -> InterviewService:
+    fake_session = _FakeSession()
+    return InterviewService(
+        _FakeInterviewRepository(fake_session),
+        _FakeResumeRepository(resumes),
+        generator,
+        HeuristicEvaluator(),
+        _FakeReportRepository(fake_session),
+    )
+
+
+async def test_follow_up_receives_the_sessions_resume_context():
+    # Regression guard: submit_answer used to hardcode resume_text=None, so
+    # follow-ups were generated blind to the candidate's resume.
+    user_id = uuid.uuid4()
+    resume_id = uuid.uuid4()
+    resume = Resume(
+        user_id=user_id,
+        file_name="cv.pdf",
+        storage_key="resumes/x/y.pdf",
+        content_type="application/pdf",
+        size_bytes=1234,
+        parsed_text="Built a Redis caching layer that cut p99 latency by 40%.",
+    )
+    resume.id = resume_id
+
+    generator = _RecordingFollowUpGenerator()
+    svc = _service_with(generator, resumes={resume_id: resume})
+
+    session = await svc.create(
+        user_id, InterviewCreate(title="P", target_role="Backend", resume_id=resume_id)
+    )
+    detail = await svc.get_detail(session.id, user_id)
+    first = detail.questions[0]
+
+    await svc.submit_answer(
+        session.id,
+        user_id,
+        AnswerCreate(question_id=first.id, content="I optimised our caching layer."),
+    )
+
+    assert len(generator.follow_up_calls) == 1
+    call = generator.follow_up_calls[0]
+    assert call["resume_id"] == resume_id
+    assert "Redis caching layer" in call["resume_text"]
+
+
+async def test_follow_up_is_persisted_with_a_free_sequence_number():
+    # Regression guard: the follow-up branch used to read session.questions on
+    # a session loaded without them -- a lazy load that raises MissingGreenlet
+    # under asyncio. It never fired only because follow_up() always returned
+    # None while the Gemini model was 404ing.
+    user_id = uuid.uuid4()
+    svc = _service_with(_RecordingFollowUpGenerator())
+
+    session = await svc.create(user_id, InterviewCreate(title="P", target_role="Backend"))
+    detail = await svc.get_detail(session.id, user_id)
+    assert len(detail.questions) == 3
+
+    await svc.submit_answer(
+        session.id,
+        user_id,
+        AnswerCreate(question_id=detail.questions[0].id, content="An answer."),
+    )
+
+    after = await svc.get_detail(session.id, user_id)
+    sequences = [q.sequence_number for q in after.questions]
+    assert len(after.questions) == 4
+    assert len(set(sequences)) == len(sequences), "sequence numbers must not collide"
+    assert sequences == [1, 2, 3, 4]
+
+    follow = after.questions[-1]
+    assert follow.parent_question_id == detail.questions[0].id
+
+
+async def test_follow_up_without_a_resume_passes_none():
+    user_id = uuid.uuid4()
+    generator = _RecordingFollowUpGenerator()
+    svc = _service_with(generator)
+
+    session = await svc.create(user_id, InterviewCreate(title="P", target_role="Backend"))
+    detail = await svc.get_detail(session.id, user_id)
+    await svc.submit_answer(
+        session.id,
+        user_id,
+        AnswerCreate(question_id=detail.questions[0].id, content="An answer."),
+    )
+
+    call = generator.follow_up_calls[0]
+    assert call["resume_text"] is None
+    assert call["resume_id"] is None
 
 
 async def test_full_interview_flow_produces_completed_report(service):

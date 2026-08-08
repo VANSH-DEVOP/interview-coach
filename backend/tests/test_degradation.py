@@ -35,7 +35,7 @@ class _BrokenGenerator(QuestionGenerator):
     async def initial_questions(self, *, target_role, resume_text, resume_id=None):
         raise RuntimeError("HTTP 404: model retired")
 
-    async def follow_up(self, *, question, answer, resume_text):
+    async def follow_up(self, *, question, answer, resume_text, resume_id=None):
         raise RuntimeError("HTTP 429: quota exceeded")
 
 

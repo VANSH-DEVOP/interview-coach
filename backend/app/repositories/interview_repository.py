@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from app.models.interview_session import InterviewSession, SessionStatus
@@ -42,6 +42,20 @@ class InterviewRepository(BaseRepository[InterviewSession]):
         items = list((await self.session.execute(stmt)).scalars().all())
         total = await self.count(*where)
         return items, total
+
+    async def next_sequence_number(self, session_id: uuid.UUID) -> int:
+        """Next free sequence_number for a session.
+
+        A COUNT-style query rather than reading len(session.questions): the
+        caller holds a session loaded without questions, and touching that
+        relationship would trigger a lazy load, which raises MissingGreenlet
+        under asyncio. Using MAX+1 is also safer than a count -- a deleted
+        question would make len()+1 collide with an existing row.
+        """
+        stmt = select(func.coalesce(func.max(Question.sequence_number), 0)).where(
+            Question.session_id == session_id
+        )
+        return int((await self.session.execute(stmt)).scalar_one()) + 1
 
     async def get_question(
         self, question_id: uuid.UUID, session_id: uuid.UUID

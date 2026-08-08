@@ -43,6 +43,19 @@ class InterviewService:
         self.evaluator = evaluator
         self.reports = reports
 
+    async def _resume_text(
+        self, session: InterviewSession, user_id: uuid.UUID
+    ) -> str | None:
+        """Parsed text of the resume attached to a session, if any.
+
+        Ownership is re-checked rather than trusted: the resume is fetched
+        through get_owned like every other user-scoped read.
+        """
+        if session.resume_id is None:
+            return None
+        resume = await self.resumes.get_owned(session.resume_id, user_id)
+        return resume.parsed_text if resume is not None else None
+
     async def _evaluate_session(self, session: InterviewSession) -> EvaluationResult:
         """Run the evaluator over a session's transcript."""
         transcript = [
@@ -130,13 +143,18 @@ class InterviewService:
         self.interviews.session.add(answer)
         await self.interviews.session.flush()
 
-        # AI seam: adaptive follow-up. The static generator returns None;
-        # the LangGraph pipeline will return real follow-up questions here.
+        # AI seam: adaptive follow-up. The static generator returns None.
+        # The resume goes through so the generator can probe the answer against
+        # what the candidate actually claims on paper; without it the follow-up
+        # only ever sees the last question and answer in isolation.
         follow_up = await self.question_generator.follow_up(
-            question=question.content, answer=payload.content, resume_text=None
+            question=question.content,
+            answer=payload.content,
+            resume_text=await self._resume_text(session, user_id),
+            resume_id=session.resume_id,
         )
         if follow_up is not None:
-            next_seq = len(session.questions) + 1 if session.questions else 1
+            next_seq = await self.interviews.next_sequence_number(session_id)
             self.interviews.session.add(
                 Question(
                     session_id=session.id,

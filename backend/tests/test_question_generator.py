@@ -5,6 +5,8 @@ the StaticQuestionGenerator defaults, and the FallbackQuestionGenerator safety
 net for both initial questions and follow-ups.
 """
 
+import uuid
+
 import pytest
 
 from app.services.ai.base import (
@@ -22,12 +24,29 @@ class _FakeClient:
         self._payload = payload
         self._error = error
         self.calls = 0
+        self.prompts: list[str] = []
 
     async def generate_json(self, *, system_instruction: str, prompt: str):
         self.calls += 1
+        self.prompts.append(prompt)
         if self._error is not None:
             raise self._error
         return self._payload
+
+
+class _FakeRag:
+    """Stands in for RAGService: records queries, returns canned context."""
+
+    def __init__(self, context: str = "", error: Exception | None = None) -> None:
+        self._context = context
+        self._error = error
+        self.queries: list[str] = []
+
+    async def retrieve_context(self, resume_id, query, top_k=5):
+        self.queries.append(query)
+        if self._error is not None:
+            raise self._error
+        return self._context
 
 
 # -- StaticQuestionGenerator --------------------------------------------------
@@ -104,6 +123,64 @@ async def test_gemini_follow_up_returns_none_when_not_requested():
     assert result is None
 
 
+async def test_gemini_follow_up_includes_resume_text():
+    # Regression guard: follow-ups used to be generated with no resume at all.
+    client = _FakeClient(payload={"ask_follow_up": True, "content": "How so?"})
+    await GeminiQuestionGenerator(client).follow_up(
+        question="Q", answer="A", resume_text="Built a Redis caching layer."
+    )
+    assert "Built a Redis caching layer." in client.prompts[0]
+
+
+async def test_gemini_follow_up_retrieves_rag_context_keyed_on_the_answer():
+    client = _FakeClient(payload={"ask_follow_up": True, "content": "How so?"})
+    rag = _FakeRag(context="Led the caching migration in 2024.")
+    resume_id = uuid.uuid4()
+
+    result = await GeminiQuestionGenerator(client, rag_service=rag).follow_up(
+        question="Tell me about performance work.",
+        answer="I optimised our cache.",
+        resume_text="raw resume text",
+        resume_id=resume_id,
+    )
+
+    # Retrieval is keyed on the exchange, not the target role.
+    assert "I optimised our cache." in rag.queries[0]
+    assert "Tell me about performance work." in rag.queries[0]
+    # Retrieved context is preferred over the raw text.
+    assert "Led the caching migration in 2024." in client.prompts[0]
+    assert "raw resume text" not in client.prompts[0]
+    assert result is not None
+    assert result.metadata["uses_rag"] is True
+
+
+async def test_gemini_falls_back_to_raw_resume_when_nothing_is_indexed():
+    # Resumes uploaded before the vector index worked are in the database but
+    # absent from Chroma. Retrieval returns empty -- the resume must still be
+    # used, not silently dropped.
+    client = _FakeClient(payload={"questions": [{"content": "Q", "question_type": "technical"}]})
+    rag = _FakeRag(context="")
+
+    questions = await GeminiQuestionGenerator(client, rag_service=rag).initial_questions(
+        target_role="Backend", resume_text="raw resume text", resume_id=uuid.uuid4()
+    )
+
+    assert "raw resume text" in client.prompts[0]
+    assert questions[0].metadata["uses_rag"] is False
+
+
+async def test_gemini_falls_back_to_raw_resume_when_retrieval_errors():
+    client = _FakeClient(payload={"questions": [{"content": "Q", "question_type": "technical"}]})
+    rag = _FakeRag(error=RuntimeError("chroma down"))
+
+    questions = await GeminiQuestionGenerator(client, rag_service=rag).initial_questions(
+        target_role="Backend", resume_text="raw resume text", resume_id=uuid.uuid4()
+    )
+
+    assert "raw resume text" in client.prompts[0]
+    assert questions[0].metadata["uses_rag"] is False
+
+
 # -- FallbackQuestionGenerator ------------------------------------------------
 
 
@@ -132,17 +209,17 @@ async def test_fallback_initial_uses_primary_when_successful():
 
 async def test_fallback_follow_up_recovers_on_primary_failure():
     class _Boom(QuestionGenerator):
-        async def initial_questions(self, *, target_role, resume_text):
+        async def initial_questions(self, *, target_role, resume_text, resume_id=None):
             return []
 
-        async def follow_up(self, *, question, answer, resume_text):
+        async def follow_up(self, *, question, answer, resume_text, resume_id=None):
             raise RuntimeError("boom")
 
     class _FixedFallback(QuestionGenerator):
-        async def initial_questions(self, *, target_role, resume_text):
+        async def initial_questions(self, *, target_role, resume_text, resume_id=None):
             return []
 
-        async def follow_up(self, *, question, answer, resume_text):
+        async def follow_up(self, *, question, answer, resume_text, resume_id=None):
             return GeneratedQuestion(content="fb", question_type="follow_up")
 
     generator = FallbackQuestionGenerator(_Boom(), _FixedFallback())

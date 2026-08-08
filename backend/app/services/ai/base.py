@@ -37,7 +37,12 @@ class QuestionGenerator(ABC):
 
     @abstractmethod
     async def follow_up(
-        self, *, question: str, answer: str, resume_text: str | None
+        self,
+        *,
+        question: str,
+        answer: str,
+        resume_text: str | None,
+        resume_id: uuid.UUID | None = None,
     ) -> GeneratedQuestion | None: ...
 
 
@@ -63,7 +68,12 @@ class StaticQuestionGenerator(QuestionGenerator):
         ]
 
     async def follow_up(
-        self, *, question: str, answer: str, resume_text: str | None
+        self,
+        *,
+        question: str,
+        answer: str,
+        resume_text: str | None,
+        resume_id: uuid.UUID | None = None,
     ) -> GeneratedQuestion | None:
         # Adaptive follow-ups arrive with the LangGraph integration.
         return None
@@ -98,16 +108,27 @@ class FallbackQuestionGenerator(QuestionGenerator):
             )
 
     async def follow_up(
-        self, *, question: str, answer: str, resume_text: str | None
+        self,
+        *,
+        question: str,
+        answer: str,
+        resume_text: str | None,
+        resume_id: uuid.UUID | None = None,
     ) -> GeneratedQuestion | None:
         try:
             return await self._primary.follow_up(
-                question=question, answer=answer, resume_text=resume_text
+                question=question,
+                answer=answer,
+                resume_text=resume_text,
+                resume_id=resume_id,
             )
         except Exception as exc:  # noqa: BLE001
             record_fallback("follow_up", exc)
             return await self._fallback.follow_up(
-                question=question, answer=answer, resume_text=resume_text
+                question=question,
+                answer=answer,
+                resume_text=resume_text,
+                resume_id=resume_id,
             )
 
 
