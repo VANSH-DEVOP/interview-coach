@@ -15,7 +15,11 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", get_settings().sync_database_url)
+# Application settings are the default source of the URL, but a caller that has
+# already set one wins -- that is how the test suite points migrations at a
+# throwaway database without mutating the process's settings.
+if not config.get_main_option("sqlalchemy.url", None):
+    config.set_main_option("sqlalchemy.url", get_settings().sync_database_url)
 target_metadata = Base.metadata
 
 

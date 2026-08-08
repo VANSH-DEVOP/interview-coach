@@ -1,8 +1,31 @@
+"""Shared test fixtures.
+
+Two kinds of test live here. Most use fakes and need nothing external. The
+database-backed ones use the `api` fixture, which runs against a real Postgres
+and *skips* rather than fails when one is not reachable -- so `pytest` stays
+useful on a laptop with nothing running, while CI gets the real coverage.
+"""
+
+import asyncio
+import os
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.pool import NullPool
 
-from app.db.session import engine
+from app.core import rate_limit
+from app.core.config import get_settings
+from app.db.session import engine, get_session
 from app.main import app
+
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+
+# A dedicated database, never the development one: the fixtures below create
+# and migrate it, and a mistake there should not touch real data.
+TEST_DB_NAME = "interviewpilot_test"
 
 
 @pytest.fixture
@@ -26,3 +49,160 @@ async def _dispose_engine():
     """
     yield
     await engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Rate-limit counters are process-global; leaking them across tests would
+    make results depend on execution order."""
+    rate_limit.reset()
+    yield
+    rate_limit.reset()
+
+
+# -- Database-backed fixtures --------------------------------------------------
+
+
+def _test_database_url() -> str:
+    explicit = os.getenv("TEST_DATABASE_URL")
+    if explicit:
+        return explicit
+    settings = get_settings()
+    return (
+        f"postgresql+asyncpg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
+        f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{TEST_DB_NAME}"
+    )
+
+
+def _with_database(url: str, name: str) -> str:
+    parts = urlsplit(url)
+    return urlunsplit(parts._replace(path=f"/{name}"))
+
+
+async def _create_database_if_missing(url: str) -> None:
+    """Connect to the maintenance database and create the test one."""
+    import asyncpg
+
+    target = urlsplit(url).path.lstrip("/")
+    admin_url = _with_database(url, "postgres").replace("postgresql+asyncpg://", "postgresql://")
+
+    connection = await asyncpg.connect(admin_url, timeout=5)
+    try:
+        exists = await connection.fetchval(
+            "SELECT 1 FROM pg_database WHERE datname = $1", target
+        )
+        if not exists:
+            # No parameter binding: CREATE DATABASE forbids it. The name is a
+            # module constant, not user input.
+            await connection.execute(f'CREATE DATABASE "{target}"')
+    finally:
+        await connection.close()
+
+
+def _run_migrations(url: str) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    config = Config(str(BACKEND_DIR / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "head")
+
+
+@pytest.fixture(scope="session")
+def database_url() -> str:
+    """A migrated test database, or skip the tests that need one.
+
+    The schema is built by running the real migrations rather than
+    Base.metadata.create_all, so these tests exercise the schema that actually
+    ships. A migration that does not apply fails the suite here.
+    """
+    url = _test_database_url()
+    try:
+        asyncio.run(_create_database_if_missing(url))
+    except Exception as exc:  # noqa: BLE001 - any connection failure means skip
+        pytest.skip(
+            f"No test database reachable ({type(exc).__name__}: {exc}). "
+            "Start Postgres and set POSTGRES_HOST/PORT or TEST_DATABASE_URL."
+        )
+    _run_migrations(url)
+    return url
+
+
+@pytest.fixture
+async def db_session(database_url: str):
+    """A session whose writes are rolled back at the end of the test.
+
+    An outer transaction is opened on a dedicated connection and the session
+    joins it via savepoints, so the application's own `commit()` inside
+    get_session succeeds without making anything durable. Rolling the outer
+    transaction back leaves the database exactly as it was, which is what makes
+    these tests order-independent without truncating tables between them.
+    """
+    test_engine = create_async_engine(database_url, poolclass=NullPool)
+    async with test_engine.connect() as connection:
+        transaction = await connection.begin()
+        session = AsyncSession(
+            bind=connection,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
+        try:
+            yield session
+        finally:
+            await session.close()
+            await transaction.rollback()
+    await test_engine.dispose()
+
+
+@pytest.fixture
+async def api(db_session, monkeypatch):
+    """HTTP client wired to the transactional test session.
+
+    AI is forced off and rate limiting disabled for the duration: these tests
+    assert on API behaviour, and neither a live provider (non-deterministic,
+    20 requests/day) nor a shared counter belongs in that.
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", None)
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", False)
+
+    async def _override_session():
+        yield db_session
+
+    app.dependency_overrides[get_session] = _override_session
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            yield ac
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+
+
+@pytest.fixture
+async def registered_user(api):
+    """A registered, logged-in user. Returns (client_headers, user_dict)."""
+    import uuid
+
+    email = f"user-{uuid.uuid4().hex[:12]}@example.com"
+    password = "correct-horse-battery"
+
+    register = await api.post(
+        "/api/v1/auth/register",
+        json={"email": email, "password": password, "full_name": "Test User"},
+    )
+    assert register.status_code == 201, register.text
+
+    login = await api.post(
+        "/api/v1/auth/login", json={"email": email, "password": password}
+    )
+    assert login.status_code == 200, login.text
+    tokens = login.json()
+
+    return {
+        "headers": {"Authorization": f"Bearer {tokens['access_token']}"},
+        "user": register.json(),
+        "email": email,
+        "password": password,
+        "tokens": tokens,
+    }
