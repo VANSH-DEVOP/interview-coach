@@ -1,0 +1,109 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project
+
+InterviewPilot AI — resume upload → AI-generated mock interview → evaluation report. Monorepo at `interview-coach/`: `backend/` (FastAPI, Python 3.12, async SQLAlchemy, PostgreSQL 16) and `frontend/` (Next.js 15 App Router, React 19, Tailwind, no UI library beyond hand-rolled shadcn-style primitives).
+
+## Commands
+
+### Docker (full stack)
+```bash
+cp .env.example .env          # set JWT_SECRET_KEY: openssl rand -hex 32
+docker compose up --build     # frontend :3000, backend :8000, postgres :5434
+docker compose restart backend  # required after changing GEMINI_API_KEY
+```
+Alembic migrations run automatically in the backend container's CMD.
+
+### Backend
+```bash
+cd backend
+source .venv/bin/activate
+pip install -e ".[dev]"       # do this after pulling; deps drift (chromadb was added late)
+alembic upgrade head
+uvicorn app.main:app --reload
+
+pytest                                       # whole suite (asyncio_mode = auto)
+pytest tests/test_evaluator.py -v            # one file
+pytest tests/test_evaluator.py::test_name -v # one test
+ruff check .
+mypy app
+```
+
+### Frontend
+```bash
+cd frontend
+npm install
+NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1 npm run dev
+npm run typecheck   # tsc --noEmit
+npm run build
+npm run lint
+```
+
+## Environment gotchas
+
+- `Settings` (`app/core/config.py`) loads `.env` **relative to the process CWD**. The only `.env` lives at the repo root, and there is no `backend/.env` — running `uvicorn` from `backend/` silently uses code defaults (no Gemini key, Postgres on 5432). Export vars, or create `backend/.env`, when running the backend outside Docker.
+- Postgres port differs per path: docker-compose publishes **5434**, `.env.example` says **5433**, the code default is **5432**. Check which one your DB is actually on.
+- Every environment variable enters the app through `app/core/config.py`. No other module reads `os.environ`.
+
+## Backend architecture
+
+Strict layering, enforced by convention — respect it when adding features:
+
+```
+router (app/api/v1/*)  → no DB access, no construction logic
+  ↓ Depends(...) from app/api/deps.py builds session → repository → service
+service (app/services/*) → business logic; depends on abstractions only
+  ↓
+repository (app/repositories/*) → the ONLY place SQLAlchemy queries are built
+```
+
+- Adding a resource: model → schema → repository → service → router → register in `app/api/v1/router.py`. New DI wiring goes in `app/api/deps.py`, never inline in a route.
+- Services raise domain exceptions from `app/core/exceptions.py` (`NotFoundError`, `ConflictError`, …). Routes must not raise `HTTPException` for domain errors — `app/middleware/error_handler.py` translates them into the envelope `{"error": {"code", "message", "details"}}`, which `frontend/src/lib/api-client.ts` parses into `ApiError`.
+- One session per request, committed on success by `get_session` (`app/db/session.py`). Repositories `flush()`; they never commit.
+- Ownership is enforced in repositories via `get_owned(entity_id, user_id)` — always use those, not `get()`, for user-scoped resources.
+- New ORM models must be imported in `app/models/__init__.py` or Alembic autogenerate won't see them. Constraint names come from the naming convention in `app/db/base.py`, so migrations stay deterministic.
+- Timestamps: columns are `TIMESTAMP WITHOUT TIME ZONE`. Use the `_utcnow()` helper pattern (UTC then `.replace(tzinfo=None)`) — passing an aware datetime makes asyncpg raise "offset-naive vs offset-aware". `test_interview_flow.py` guards this.
+- Schema change → edit models → `alembic revision --autogenerate -m "..."` → review the generated file.
+
+## AI pipeline (`app/services/ai/`)
+
+Everything is behind an ABC with a factory, and **every AI path degrades gracefully to a deterministic local implementation** when `GEMINI_API_KEY` is unset or the provider fails. Preserve this property in any change — an interview must always be completable and always produce a populated report.
+
+| Seam | Real impl | Fallback |
+|---|---|---|
+| `QuestionGenerator` (`base.py`, factory `get_question_generator`) | `GeminiQuestionGenerator` (`gemini.py`), 5 tailored questions + adaptive follow-ups | `StaticQuestionGenerator`: 3 fixed questions, `follow_up()` → `None` |
+| `Evaluator` (`evaluator.py`, factory `get_evaluator`) | `GeminiEvaluator` | `HeuristicEvaluator`: score from answer coverage + avg word depth |
+| RAG (`deps.py::get_rag_service`) | `RAGService` = `EmbeddingService` (Gemini `embedding-001`) + `ChromaVectorStore` | returns `None`; generator falls back to `resume_text[:4000]` |
+
+`FallbackQuestionGenerator` / `FallbackEvaluator` wrap the primary and catch *any* exception. `GeminiClient` (`gemini_client.py`) is a hand-written httpx call to the REST API in JSON mode (no SDK); it raises `GeminiError` on bad shape/status. Model output is deliberately parsed leniently (`_first`, `_as_str_list` in `evaluator.py`) because field names vary between responses.
+
+Flow: `ResumeService.upload()` parses PDF/DOCX (`resume_parser.py`) → sets `Resume.parsed_text` + `status` → indexes chunks into ChromaDB (non-blocking; failure is logged, upload still succeeds). `InterviewService.create()` generates questions (RAG-retrieved resume context when available), `submit_answer()` may append a `follow_up` question linked by `parent_question_id`, `complete()` runs the evaluator and writes a `COMPLETED` `EvaluationReport`. `reevaluate()` regenerates a report for an already-completed session.
+
+ChromaDB persists to `/tmp/interviewpilot/chroma` (hardcoded in `deps.py::get_rag_service`).
+
+Deeper docs: `backend/AI_INTEGRATION.md`, `backend/RAG_IMPLEMENTATION.md`.
+
+## Storage
+
+`app/services/storage/` mirrors the same pattern: `StorageService` ABC, `LocalStorageService` impl, `get_storage_service()` factory keyed on `STORAGE_BACKEND`. Blobs live outside the code tree (`STORAGE_LOCAL_PATH`, a named Docker volume). Uploads use opaque keys `resumes/{user_id}/{uuid}.pdf`; the client filename is metadata only. Swapping to S3/R2 should touch this package only.
+
+## Tests
+
+`backend/tests/` has two kinds of files, both collected by pytest:
+- **Real unit tests** — `test_evaluator.py`, `test_question_generator.py`, `test_interview_flow.py`, `test_storage.py`, `test_resume_parser.py`. These use fake clients / in-memory fake repositories, so they need no network and no database. New AI or service logic should follow this pattern.
+- **Script-style probes** — `test_gemini_integration.py`, `test_rag_pipeline.py`. They print rather than assert and self-skip when `GEMINI_API_KEY` is unset; they exist to exercise the live provider.
+
+`tests/api/test_health.py` drives the app through `httpx.ASGITransport` (`conftest.py`); the health endpoint reports `database: down` rather than failing when Postgres is absent.
+
+## Frontend
+
+- Route groups: `(auth)/` for login/register, `(app)/` for the authenticated shell (sidebar + mobile nav). Pages are client components calling the backend directly through `@/lib/api-client`.
+- Tokens are stored in **cookies** (`ip_access_token`, `ip_refresh_token`) so `middleware.ts` can gate routes; `api-client.ts` does one transparent refresh-and-retry on a 401. `middleware.ts` is a UX guard only — real authorization is server-side.
+- `src/types/index.ts` hand-mirrors the backend Pydantic schemas. Changing a response schema means editing both sides.
+- `src/hooks/use-auth.ts` is the single entry point for login/register/logout and current-user state.
+
+## Note on the README
+
+`README.md` predates the AI work and still describes question generation/evaluation as unimplemented "seams". The seams are filled: Gemini generation, evaluation, and RAG all ship. The layering rules and setup instructions in it are still accurate.
