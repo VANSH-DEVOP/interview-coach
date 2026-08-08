@@ -161,6 +161,75 @@ async def test_get_unknown_resume_is_404(api, registered_user, storage_root):
     assert response.status_code == 404
 
 
+# -- Preview -------------------------------------------------------------------
+
+
+async def test_preview_returns_the_extracted_text(api, registered_user, storage_root, db_session):
+    from app.models.resume import Resume
+
+    headers = registered_user["headers"]
+    resume = (await _upload(api, headers)).json()
+
+    # A blank PDF extracts to nothing, so give it text the way parsing would.
+    row = await db_session.get(Resume, uuid.UUID(resume["id"]))
+    row.parsed_text = "Senior Backend Engineer. Python, FastAPI, PostgreSQL."
+    await db_session.commit()
+
+    response = await api.get(f"/api/v1/resumes/{resume['id']}/preview", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["parsed_text"] == "Senior Backend Engineer. Python, FastAPI, PostgreSQL."
+    assert body["word_count"] == 6  # whitespace-separated tokens
+    assert body["character_count"] == len(body["parsed_text"])
+
+
+async def test_preview_reports_empty_extraction_rather_than_pretending(
+    api, registered_user, storage_root
+):
+    """A scanned PDF parses to nothing. The user needs to see that, because it
+    is the difference between a personalised interview and a generic one."""
+    headers = registered_user["headers"]
+    resume = (await _upload(api, headers)).json()
+
+    body = (await api.get(f"/api/v1/resumes/{resume['id']}/preview", headers=headers)).json()
+
+    assert not body["parsed_text"]
+    assert body["word_count"] == 0
+    assert body["character_count"] == 0
+
+
+async def test_preview_is_not_included_in_the_list_response(
+    api, registered_user, storage_root
+):
+    """Parsed text can run to thousands of characters; it stays off the list."""
+    headers = registered_user["headers"]
+    await _upload(api, headers)
+
+    listed = await api.get("/api/v1/resumes?page=1&size=50", headers=headers)
+
+    assert "parsed_text" not in listed.json()["items"][0]
+
+
+async def test_another_user_cannot_preview_a_resume(
+    api, registered_user, other_user, storage_root
+):
+    resume = (await _upload(api, registered_user["headers"])).json()
+
+    response = await api.get(
+        f"/api/v1/resumes/{resume['id']}/preview", headers=other_user["headers"]
+    )
+
+    assert response.status_code == 404
+
+
+async def test_preview_unknown_resume_is_404(api, registered_user, storage_root):
+    response = await api.get(
+        f"/api/v1/resumes/{uuid.uuid4()}/preview", headers=registered_user["headers"]
+    )
+    assert response.status_code == 404
+
+
 # -- Reprocess -----------------------------------------------------------------
 
 

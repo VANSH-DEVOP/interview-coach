@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Response, UploadFile, status
 
 from app.api.deps import CurrentUser, get_resume_service, limit_by_user
 from app.schemas.common import Page, PageParams
-from app.schemas.resume import ResumeRead
+from app.schemas.resume import ResumePreview, ResumeRead
 from app.services.resume_service import ResumeService
 
 router = APIRouter(prefix="/resumes", tags=["resumes"])
@@ -65,6 +65,23 @@ async def get_resume(
 ) -> ResumeRead:
     resume = await resumes.get(resume_id, current_user.id)
     return ResumeRead.model_validate(resume)
+
+
+@router.get("/{resume_id}/preview", response_model=ResumePreview)
+async def preview_resume(
+    resume_id: uuid.UUID, current_user: CurrentUser, resumes: ResumeSvc
+) -> ResumePreview:
+    """The text extracted from a resume — what question generation actually sees."""
+    resume = await resumes.get(resume_id, current_user.id)
+    text = resume.parsed_text or ""
+    return ResumePreview(
+        id=resume.id,
+        file_name=resume.file_name,
+        status=resume.status,
+        parsed_text=resume.parsed_text,
+        character_count=len(text),
+        word_count=len(text.split()),
+    )
 
 
 @router.get("/{resume_id}/download")

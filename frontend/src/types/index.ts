@@ -25,6 +25,16 @@ export interface Resume {
   created_at: string;
 }
 
+export interface ResumePreview {
+  id: string;
+  file_name: string;
+  status: ResumeStatus;
+  /** The text question generation actually sees. Null when parsing failed. */
+  parsed_text: string | null;
+  character_count: number;
+  word_count: number;
+}
+
 export type SessionStatus = "created" | "in_progress" | "completed" | "abandoned";
 export type QuestionType = "behavioral" | "technical" | "follow_up";
 export type InterviewType = "behavioral" | "technical" | "system_design" | "mixed";

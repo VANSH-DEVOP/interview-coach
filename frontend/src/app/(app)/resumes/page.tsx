@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
-import { Download, FileText, RefreshCw, Trash2, Upload } from "lucide-react";
+import { Download, Eye, FileText, RefreshCw, Trash2, Upload } from "lucide-react";
 
 import { api, ApiError, getAccessToken } from "@/lib/api-client";
-import type { Page, Resume } from "@/types";
+import type { Page, Resume, ResumePreview } from "@/types";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Badge } from "@/components/ui/badge";
@@ -27,6 +27,8 @@ export default function ResumesPage() {
   const [error, setError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [reprocessingId, setReprocessingId] = useState<string | null>(null);
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const [preview, setPreview] = useState<ResumePreview | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -52,6 +54,23 @@ export default function ResumesPage() {
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function handlePreview(id: string) {
+    // Toggle closed if this one is already open.
+    if (previewId === id) {
+      setPreviewId(null);
+      return;
+    }
+    setError(null);
+    setPreviewId(id);
+    setPreview(null);
+    try {
+      setPreview(await api.get<ResumePreview>(`/resumes/${id}/preview`));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Unable to load the preview.");
+      setPreviewId(null);
     }
   }
 
@@ -162,6 +181,15 @@ export default function ResumesPage() {
                   <Button
                     variant="ghost"
                     size="icon"
+                    aria-label="Preview extracted text"
+                    title="See the text the AI reads from this resume"
+                    onClick={() => handlePreview(resume.id)}
+                  >
+                    <Eye className="h-4 w-4" aria-hidden />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     aria-label="Reprocess resume"
                     title="Re-parse this resume and rebuild its search index"
                     disabled={reprocessingId === resume.id}
@@ -190,6 +218,31 @@ export default function ResumesPage() {
                   </Button>
                 </div>
               </CardContent>
+
+              {previewId === resume.id && (
+                <CardContent className="border-t pt-4">
+                  {preview === null ? (
+                    <p className="text-sm text-muted-foreground">Loading preview…</p>
+                  ) : preview.parsed_text ? (
+                    <>
+                      <p className="mb-2 text-xs text-muted-foreground">
+                        {preview.word_count.toLocaleString()} words ·{" "}
+                        {preview.character_count.toLocaleString()} characters — this is
+                        what question generation reads.
+                      </p>
+                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-secondary/50 p-3 text-xs leading-relaxed">
+                        {preview.parsed_text}
+                      </pre>
+                    </>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      No text could be extracted from this file, so interviews using it
+                      will not be personalised. Try reprocessing it, or upload a
+                      text-based PDF rather than a scan.
+                    </p>
+                  )}
+                </CardContent>
+              )}
             </Card>
           ))}
         </div>
