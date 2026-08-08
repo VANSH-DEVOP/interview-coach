@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from app.services.ai.base import GeneratedQuestion, InterviewSpec, QuestionGenerator
 from app.services.ai.gemini_client import GeminiClient

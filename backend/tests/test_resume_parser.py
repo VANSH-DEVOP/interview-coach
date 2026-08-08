@@ -15,7 +15,6 @@ def sample_pdf():
     pdf_writer.add_blank_page(width=200, height=200)
     page = pdf_writer.pages[0]
     # Add text to the page
-    from pypdf._page import PageObject, Transformation
     page.merge_page(PdfWriter().add_blank_page(width=200, height=200).pages[0])
     
     # For testing, we'll use a minimal PDF structure

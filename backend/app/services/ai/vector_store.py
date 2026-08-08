@@ -6,7 +6,7 @@ import logging
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -116,11 +116,15 @@ class ChromaVectorStore(VectorStore):
                 for i in range(len(chunks))
             ]
 
+            # chromadb's stubs declare numpy-flavoured types for embeddings and
+            # a narrower Mapping for metadatas than the runtime accepts; plain
+            # lists and dicts are the documented input. Cast rather than
+            # contort the call site around the stubs.
             self._collection.add(
                 ids=ids,
-                embeddings=embeddings,
+                embeddings=cast(Any, embeddings),
                 documents=chunks,
-                metadatas=metadatas,
+                metadatas=cast(Any, metadatas),
             )
             logger.info(
                 f"Added {len(chunks)} chunks for resume {resume_id} to vector store"
@@ -136,18 +140,27 @@ class ChromaVectorStore(VectorStore):
         """Retrieve top-k relevant chunks for a query."""
         try:
             results = self._collection.query(
-                query_embeddings=[query_embedding],
+                query_embeddings=cast(Any, [query_embedding]),
                 n_results=top_k,
                 where={"resume_id": str(resume_id)},
             )
 
-            if not results or not results["documents"] or not results["documents"][0]:
+            # Every key in the result is optional and each value is a list of
+            # per-query lists. Unpack defensively: an absent key and an empty
+            # result both mean "nothing retrieved".
+            raw_documents = results.get("documents") or []
+            raw_distances = results.get("distances") or []
+            raw_metadatas = results.get("metadatas") or []
+
+            if not raw_documents or not raw_documents[0]:
                 logger.warning(f"No results found for resume {resume_id}")
                 return RetrievalResult([], [], [])
 
-            documents = results["documents"][0]
-            distances = results["distances"][0]
-            metadatas = results["metadatas"][0] if results.get("metadatas") else []
+            documents = [str(doc) for doc in raw_documents[0]]
+            distances = [float(d) for d in raw_distances[0]] if raw_distances else []
+            metadatas = (
+                [dict(meta) for meta in raw_metadatas[0]] if raw_metadatas else []
+            )
 
             return RetrievalResult(documents, distances, metadatas)
         except Exception as e:

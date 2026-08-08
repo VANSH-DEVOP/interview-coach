@@ -143,8 +143,11 @@ class HeuristicEvaluator(Evaluator):
             )
 
         coverage = answered_count / total
+        # `answered` is already filtered on a non-blank answer, but the type is
+        # still str | None; the `or ""` keeps that provable rather than relying
+        # on the reader to check the filter above.
         avg_words = (
-            sum(len(qa.answer.split()) for qa in answered) / answered_count
+            sum(len((qa.answer or "").split()) for qa in answered) / answered_count
             if answered_count
             else 0
         )

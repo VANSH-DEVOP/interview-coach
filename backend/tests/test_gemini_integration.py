@@ -1,12 +1,9 @@
 """Test Gemini question generation and evaluation with a mock interview."""
 
 import asyncio
-import json
-from decimal import Decimal
 
 from app.services.ai.gemini_client import GeminiClient, GeminiError
-from app.services.ai.base import GeneratedQuestion, QuestionGenerator
-from app.services.ai.evaluator import Evaluator, QAPair
+from app.services.ai.evaluator import QAPair
 
 
 async def test_gemini_question_generation():
@@ -80,7 +77,7 @@ async def test_gemini_question_generation():
             )
             
             if follow_up:
-                print(f"✅ Follow-up generated:")
+                print("✅ Follow-up generated:")
                 print(f"   {follow_up.content}")
             else:
                 print("ℹ️  No follow-up needed for this answer.")
@@ -150,15 +147,15 @@ async def test_gemini_evaluation():
         )
         
         print(f"Overall Score: {result.overall_score}/10")
-        print(f"\n✅ Strengths:")
+        print("\n✅ Strengths:")
         for s in result.strengths:
             print(f"   • {s}")
         
-        print(f"\n⚠️  Weaknesses/Areas for Improvement:")
+        print("\n⚠️  Weaknesses/Areas for Improvement:")
         for w in result.weaknesses:
             print(f"   • {w}")
         
-        print(f"\n📋 Detailed Feedback:")
+        print("\n📋 Detailed Feedback:")
         if result.detailed_feedback.get("recommendations"):
             print("   Recommendations:")
             for rec in result.detailed_feedback["recommendations"]:

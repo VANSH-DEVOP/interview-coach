@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import uuid
-from pathlib import Path
 
 from app.services.ai.embedding import EmbeddingService
 from app.services.ai.rag import RAGService, TextChunker

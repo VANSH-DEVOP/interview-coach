@@ -8,13 +8,6 @@ public surface.
 import uuid
 from datetime import datetime, timezone
 
-
-def _utcnow() -> datetime:
-    """Naive UTC timestamp matching the TIMESTAMP WITHOUT TIME ZONE columns."""
-    # Compute in UTC then drop tzinfo so asyncpg accepts it for the naive
-    # TIMESTAMP WITHOUT TIME ZONE columns (utcnow() is deprecated in 3.12).
-    return datetime.now(timezone.utc).replace(tzinfo=None)
-
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.models.answer import Answer
 from app.models.evaluation_report import EvaluationReport, ReportStatus
@@ -26,6 +19,13 @@ from app.repositories.resume_repository import ResumeRepository
 from app.schemas.interview import AnswerCreate, InterviewCreate
 from app.services.ai.base import InterviewSpec, QuestionGenerator
 from app.services.ai.evaluator import EvaluationResult, Evaluator, QAPair
+
+
+def _utcnow() -> datetime:
+    """Naive UTC timestamp matching the TIMESTAMP WITHOUT TIME ZONE columns."""
+    # Compute in UTC then drop tzinfo so asyncpg accepts it for the naive
+    # TIMESTAMP WITHOUT TIME ZONE columns (utcnow() is deprecated in 3.12).
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class InterviewService:
