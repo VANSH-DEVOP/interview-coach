@@ -45,3 +45,42 @@
     @apply bg-background text-foreground antialiased;
   }
 }
+
+/* Print: strip the app chrome so a printed report (or "Save as PDF") is the
+   report itself rather than a screenshot of the application. Anything marked
+   print:hidden in a component is removed by Tailwind's print variant; these
+   rules handle the shell, which components do not control. */
+@media print {
+  nav,
+  aside,
+  header:has(nav) {
+    display: none !important;
+  }
+
+  body {
+    background: #fff;
+    color: #000;
+  }
+
+  main {
+    padding: 0 !important;
+    max-width: none !important;
+  }
+
+  /* Borders survive; background fills mostly do not, and cost ink when they do. */
+  [class*="bg-card"],
+  [class*="bg-secondary"] {
+    background: transparent !important;
+  }
+
+  /* Keep a card and its heading together rather than splitting across a page. */
+  section,
+  article,
+  [class*="rounded-lg"][class*="border"] {
+    break-inside: avoid;
+  }
+
+  a[href]::after {
+    content: "";
+  }
+}

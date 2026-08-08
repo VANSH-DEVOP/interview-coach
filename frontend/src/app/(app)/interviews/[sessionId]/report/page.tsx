@@ -3,9 +3,9 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
+import { AlertTriangle, Download, Loader2, Printer, RefreshCw } from "lucide-react";
 
-import { api, ApiError } from "@/lib/api-client";
+import { api, ApiError, getAccessToken } from "@/lib/api-client";
 import type { EvaluationReport } from "@/types";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,8 @@ import { ReportView } from "@/components/shared/report-view";
 /** Evaluation typically takes a few seconds; this trades a little latency for
  *  far fewer requests than a tight loop. */
 const POLL_INTERVAL_MS = 2000;
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 export default function SessionReportPage() {
   const params = useParams<{ sessionId: string }>();
@@ -80,13 +82,60 @@ export default function SessionReportPage() {
     }
   }
 
+  /** Download the Markdown export. Needs a manual fetch to carry the bearer
+   *  token and read the filename the server chose. */
+  async function handleExport() {
+    if (!report) return;
+    setError(null);
+    try {
+      const response = await fetch(`${API_URL}/reports/${report.id}/export`, {
+        headers: { Authorization: `Bearer ${getAccessToken() ?? ""}` },
+      });
+      if (!response.ok) throw new Error("Export failed.");
+
+      const disposition = response.headers.get("content-disposition") ?? "";
+      const match = disposition.match(/filename="([^"]+)"/);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = match?.[1] ?? "interview-report.md";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Unable to export this report.");
+    }
+  }
+
+  const canExport = report?.status === "completed";
+
   return (
     <>
       <PageHeader
         title="Interview report"
         description="AI-generated evaluation of your session."
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 print:hidden">
+            <Button
+              variant="outline"
+              onClick={() => window.print()}
+              disabled={!canExport}
+              title="Print, or save as PDF from the print dialog"
+            >
+              <Printer className="h-4 w-4" aria-hidden />
+              Print / PDF
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleExport}
+              disabled={!canExport}
+              title="Download as Markdown"
+            >
+              <Download className="h-4 w-4" aria-hidden />
+              Export
+            </Button>
             <Button
               variant="outline"
               onClick={handleReevaluate}

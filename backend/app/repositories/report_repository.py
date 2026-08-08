@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import NamedTuple
 
 from sqlalchemy import Row, select
+from sqlalchemy.orm import selectinload
 
 from app.models.evaluation_report import EvaluationReport
 from app.models.interview_session import InterviewSession
@@ -31,6 +32,22 @@ class ReportRepository(BaseRepository[EvaluationReport]):
             select(EvaluationReport)
             .join(InterviewSession, EvaluationReport.session_id == InterviewSession.id)
             .where(EvaluationReport.id == report_id, InterviewSession.user_id == user_id)
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def get_owned_with_session(
+        self, report_id: uuid.UUID, user_id: uuid.UUID
+    ) -> EvaluationReport | None:
+        """A report with its session eagerly loaded.
+
+        Export needs the session's title and role. Reaching through
+        report.session without this raises MissingGreenlet under asyncio.
+        """
+        stmt = (
+            select(EvaluationReport)
+            .join(InterviewSession, EvaluationReport.session_id == InterviewSession.id)
+            .where(EvaluationReport.id == report_id, InterviewSession.user_id == user_id)
+            .options(selectinload(EvaluationReport.session))
         )
         return (await self.session.execute(stmt)).scalar_one_or_none()
 

@@ -1,13 +1,15 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
+from fastapi.responses import PlainTextResponse
 
 from app.api.deps import CurrentUser, get_report_repository, get_report_service
 from app.core.exceptions import NotFoundError
 from app.repositories.report_repository import ReportRepository
 from app.schemas.common import Page, PageParams
 from app.schemas.report import ProgressSummary, ReportRead
+from app.services.report_export import filename_for, render_markdown
 from app.services.report_service import ReportService
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -51,6 +53,24 @@ async def get_report_by_session(
     if report is None:
         raise NotFoundError("No report exists for this session yet.")
     return ReportRead.model_validate(report)
+
+
+@router.get("/{report_id}/export", response_class=PlainTextResponse)
+async def export_report(
+    report_id: uuid.UUID, current_user: CurrentUser, reports: ReportRepo
+) -> Response:
+    """Download the report as Markdown, for sharing or keeping."""
+    report = await reports.get_owned_with_session(report_id, current_user.id)
+    if report is None:
+        raise NotFoundError("Report not found.")
+
+    return Response(
+        content=render_markdown(report, report.session),
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename_for(report.session)}"'
+        },
+    )
 
 
 @router.get("/{report_id}", response_model=ReportRead)
