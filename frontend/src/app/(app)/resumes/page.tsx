@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
-import { Download, FileText, Trash2, Upload } from "lucide-react";
+import { Download, FileText, RefreshCw, Trash2, Upload } from "lucide-react";
 
 import { api, ApiError, getAccessToken } from "@/lib/api-client";
 import type { Page, Resume } from "@/types";
@@ -26,6 +26,7 @@ export default function ResumesPage() {
   const [resumes, setResumes] = useState<Page<Resume> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [reprocessingId, setReprocessingId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -51,6 +52,19 @@ export default function ResumesPage() {
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function handleReprocess(id: string) {
+    setError(null);
+    setReprocessingId(id);
+    try {
+      await api.post<Resume>(`/resumes/${id}/reprocess`);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Reprocessing failed.");
+    } finally {
+      setReprocessingId(null);
     }
   }
 
@@ -145,6 +159,19 @@ export default function ResumesPage() {
                   <Badge variant={resume.status === "failed" ? "destructive" : "secondary"}>
                     {resume.status}
                   </Badge>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Reprocess resume"
+                    title="Re-parse this resume and rebuild its search index"
+                    disabled={reprocessingId === resume.id}
+                    onClick={() => handleReprocess(resume.id)}
+                  >
+                    <RefreshCw
+                      className={`h-4 w-4 ${reprocessingId === resume.id ? "animate-spin" : ""}`}
+                      aria-hidden
+                    />
+                  </Button>
                   <Button
                     variant="ghost"
                     size="icon"

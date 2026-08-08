@@ -79,23 +79,68 @@ class ResumeService:
         )
         resume = await self.resumes.add(resume)
 
-        # Index resume for RAG retrieval if available and parsing succeeded
-        if self.rag_service and parsed_text:
-            try:
-                chunk_count = await self.rag_service.index_resume(
-                    resume.id, user_id, parsed_text
-                )
-                logger.info(
-                    f"Indexed resume {resume.id} with {chunk_count} chunks for RAG retrieval"
-                )
-            except Exception as e:
-                # Non-blocking: RAG indexing failure doesn't prevent upload.
-                # Also counted as a degradation so it shows up on /health -- an
-                # unindexed resume means every later question for it is built
-                # from truncated raw text instead of retrieved context.
-                logger.error(f"Failed to index resume {resume.id} for RAG: {e}")
-                record_fallback("index_resume", e)
+        await self._index(resume, user_id, parsed_text)
+        return resume
 
+    async def _index(
+        self, resume: Resume, user_id: uuid.UUID, parsed_text: str | None
+    ) -> None:
+        """Index a resume for retrieval. Never raises.
+
+        Non-blocking by design: a failure here must not fail the upload. It is
+        recorded as a degradation so it shows up on /health -- an unindexed
+        resume means every later question for it is built from truncated raw
+        text instead of retrieved context, with no other outward sign.
+        """
+        if not (self.rag_service and parsed_text):
+            return
+        try:
+            chunk_count = await self.rag_service.index_resume(
+                resume.id, user_id, parsed_text
+            )
+            logger.info(
+                f"Indexed resume {resume.id} with {chunk_count} chunks for RAG retrieval"
+            )
+        except Exception as e:
+            logger.error(f"Failed to index resume {resume.id} for RAG: {e}")
+            record_fallback("index_resume", e)
+
+    async def reprocess(self, resume_id: uuid.UUID, user_id: uuid.UUID) -> Resume:
+        """Re-parse the stored file and rebuild its vector index.
+
+        Two situations need this, and neither had a way out:
+
+          * A parse failure set ResumeStatus.FAILED permanently. The blob was
+            still in storage, but nothing would ever look at it again.
+          * A resume uploaded while indexing was broken is in the database and
+            absent from the vector store, so retrieval silently returns nothing
+            for it forever.
+
+        The old index is dropped before rebuilding. Chunk ids are positional
+        ({resume_id}:chunk:N), so re-indexing over the top of a longer previous
+        run would leave stale trailing chunks behind.
+        """
+        resume = await self.get(resume_id, user_id)
+        content = await self.storage.read(resume.storage_key)
+
+        try:
+            resume.parsed_text = ResumeParser.parse(content, resume.content_type)
+            resume.status = ResumeStatus.PARSED
+            logger.info(f"Re-parsed resume {resume.id} for user {user_id}")
+        except ValueError as e:
+            resume.parsed_text = None
+            resume.status = ResumeStatus.FAILED
+            logger.warning(f"Re-parse failed for resume {resume.id}: {e}")
+
+        await self.resumes.session.flush()
+
+        if self.rag_service:
+            try:
+                await self.rag_service.delete_index(resume_id)
+            except Exception as e:
+                logger.warning(f"Could not clear old index for resume {resume_id}: {e}")
+
+        await self._index(resume, user_id, resume.parsed_text)
         return resume
 
     async def list(self, user_id: uuid.UUID, *, offset: int, limit: int):

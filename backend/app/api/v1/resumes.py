@@ -31,6 +31,19 @@ async def upload_resume(file: UploadFile, current_user: CurrentUser, resumes: Re
     return ResumeRead.model_validate(resume)
 
 
+@router.post(
+    "/{resume_id}/reprocess",
+    response_model=ResumeRead,
+    dependencies=[Depends(limit_by_user("upload"))],
+)
+async def reprocess_resume(
+    resume_id: uuid.UUID, current_user: CurrentUser, resumes: ResumeSvc
+) -> ResumeRead:
+    """Re-parse a stored resume and rebuild its vector index."""
+    resume = await resumes.reprocess(resume_id, current_user.id)
+    return ResumeRead.model_validate(resume)
+
+
 @router.get("", response_model=Page[ResumeRead])
 async def list_resumes(
     current_user: CurrentUser,
