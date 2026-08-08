@@ -31,6 +31,7 @@ from app.services.ai.vector_store import get_vector_store
 from app.services.ai.rag import RAGService
 from app.services.auth_service import AuthService
 from app.services.interview_service import InterviewService
+from app.services.report_service import ReportService
 from app.services.resume_service import ResumeService
 from app.services.user_service import UserService
 from app.services.storage import get_storage_service
@@ -108,6 +109,12 @@ def get_user_service(
     users: Annotated[UserRepository, Depends(get_user_repository)],
 ) -> UserService:
     return UserService(users)
+
+
+def get_report_service(
+    reports: Annotated[ReportRepository, Depends(get_report_repository)],
+) -> ReportService:
+    return ReportService(reports)
 
 
 def get_resume_service(

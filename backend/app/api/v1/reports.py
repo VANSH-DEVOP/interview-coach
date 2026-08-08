@@ -3,11 +3,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import CurrentUser, get_report_repository
+from app.api.deps import CurrentUser, get_report_repository, get_report_service
 from app.core.exceptions import NotFoundError
 from app.repositories.report_repository import ReportRepository
 from app.schemas.common import Page, PageParams
-from app.schemas.report import ReportRead
+from app.schemas.report import ProgressSummary, ReportRead
+from app.services.report_service import ReportService
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -29,6 +30,17 @@ async def list_reports(
         page=params.page,
         size=params.size,
     )
+
+
+# Registered before /{report_id}: FastAPI matches in declaration order, and
+# "progress" would otherwise be parsed as a report UUID and 422.
+@router.get("/progress", response_model=ProgressSummary)
+async def get_progress(
+    current_user: CurrentUser,
+    reports: Annotated[ReportService, Depends(get_report_service)],
+) -> ProgressSummary:
+    """Score trend and aggregates across the user's completed interviews."""
+    return await reports.progress(current_user.id)
 
 
 @router.get("/by-session/{session_id}", response_model=ReportRead)

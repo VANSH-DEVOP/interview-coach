@@ -70,6 +70,27 @@ export interface InterviewSessionDetail extends InterviewSession {
 
 export type ReportStatus = "pending" | "generating" | "completed" | "failed";
 
+export interface ProgressPoint {
+  session_id: string;
+  title: string;
+  target_role: string | null;
+  interview_type: InterviewType;
+  difficulty: DifficultyLevel;
+  score: number;
+  scored_at: string;
+}
+
+export interface ProgressSummary {
+  points: ProgressPoint[];
+  total_scored: number;
+  average_score: number | null;
+  best_score: number | null;
+  latest_score: number | null;
+  /** Recent-half mean minus earlier-half mean; null until enough history. */
+  improvement: number | null;
+  average_by_type: Record<string, number>;
+}
+
 export interface PerQuestionFeedback {
   question: string;
   answered?: boolean;
