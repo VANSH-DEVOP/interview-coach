@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { CheckCircle2, ChevronRight, Trash2 } from "lucide-react";
+import { CheckCircle2, ChevronRight, Timer, Trash2 } from "lucide-react";
 
 import { api, ApiError } from "@/lib/api-client";
 import type { Answer, InterviewSessionDetail, Question } from "@/types";
@@ -12,6 +12,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+
+/** Seconds as m:ss, or plain seconds under a minute. */
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+}
 
 export default function InterviewSessionPage() {
   const router = useRouter();
@@ -29,6 +36,10 @@ export default function InterviewSessionPage() {
   // Two-step confirmation: deleting takes the transcript and report with it,
   // and there is no undo.
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // Wall-clock start of the current question, used to report how long the
+  // answer took. Held in a ref so the ticking display cannot restart it.
+  const questionStartedAt = useRef<number>(Date.now());
+  const [elapsed, setElapsed] = useState(0);
 
   const load = useCallback(async () => {
     const data = await api.get<InterviewSessionDetail>(`/interviews/${sessionId}`);
@@ -51,6 +62,23 @@ export default function InterviewSessionPage() {
   const isCompleted = session?.status === "completed";
   const isAbandoned = session?.status === "abandoned";
   const isInProgress = session?.status === "in_progress";
+  const isTiming = Boolean(isInProgress && activeQuestion && !activeQuestion.answer);
+
+  // Restart the clock whenever a different question becomes active.
+  useEffect(() => {
+    questionStartedAt.current = Date.now();
+    setElapsed(0);
+  }, [activeQuestion?.id]);
+
+  // Tick only while an unanswered question is on screen.
+  useEffect(() => {
+    if (!isTiming) return;
+    const id = setInterval(
+      () => setElapsed(Math.floor((Date.now() - questionStartedAt.current) / 1000)),
+      1000,
+    );
+    return () => clearInterval(id);
+  }, [isTiming, activeQuestion?.id]);
 
   async function handleSubmitAnswer() {
     if (!activeQuestion || !draft.trim()) return;
@@ -60,6 +88,10 @@ export default function InterviewSessionPage() {
       const answer = await api.post<Answer>(`/interviews/${sessionId}/answers`, {
         question_id: activeQuestion.id,
         content: draft.trim(),
+        duration_seconds: Math.max(
+          0,
+          Math.round((Date.now() - questionStartedAt.current) / 1000),
+        ),
       });
       // Reflect locally, then reload to pick up any AI follow-up question.
       setDraft("");
@@ -166,7 +198,18 @@ export default function InterviewSessionPage() {
               <CardTitle className="text-base">
                 Question {activeIndex + 1} of {questions.length}
               </CardTitle>
-              <Badge variant="outline">{activeQuestion.question_type.replace("_", " ")}</Badge>
+              <div className="flex items-center gap-2">
+                {isTiming && (
+                  <span
+                    className="flex items-center gap-1 text-xs tabular-nums text-muted-foreground"
+                    aria-label={`Time on this question: ${formatDuration(elapsed)}`}
+                  >
+                    <Timer className="h-3.5 w-3.5" aria-hidden />
+                    {formatDuration(elapsed)}
+                  </span>
+                )}
+                <Badge variant="outline">{activeQuestion.question_type.replace("_", " ")}</Badge>
+              </div>
             </div>
             <CardDescription className="pt-2 text-base text-foreground">
               {activeQuestion.content}
@@ -175,7 +218,15 @@ export default function InterviewSessionPage() {
           <CardContent className="space-y-4">
             {activeQuestion.answer ? (
               <div className="rounded-md border bg-secondary/50 p-3">
-                <p className="text-xs font-medium text-muted-foreground">Your answer</p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-medium text-muted-foreground">Your answer</p>
+                  {activeQuestion.answer.duration_seconds !== null && (
+                    <span className="flex items-center gap-1 text-xs tabular-nums text-muted-foreground">
+                      <Timer className="h-3.5 w-3.5" aria-hidden />
+                      answered in {formatDuration(activeQuestion.answer.duration_seconds)}
+                    </span>
+                  )}
+                </div>
                 <p className="mt-1 text-sm">{activeQuestion.answer.content}</p>
               </div>
             ) : (
