@@ -56,8 +56,11 @@ def upgrade() -> None:
             "question_count", sa.Integer(), nullable=False, server_default="5"
         ),
     )
+    # Bare name only: the metadata naming convention ("ck_%(table_name)s_%(constraint_name)s")
+    # is applied on top of it. Passing the full name yields a double-prefixed,
+    # hash-truncated constraint that no longer matches the model.
     op.create_check_constraint(
-        "ck_interview_sessions_question_count_range",
+        "question_count_range",
         "interview_sessions",
         "question_count BETWEEN 3 AND 10",
     )
@@ -66,7 +69,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind = op.get_bind()
     op.drop_constraint(
-        "ck_interview_sessions_question_count_range",
+        "question_count_range",
         "interview_sessions",
         type_="check",
     )
