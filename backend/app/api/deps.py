@@ -4,7 +4,9 @@ Routes declare dependencies; FastAPI builds the object graph per request:
 session → repositories → services. Routes contain zero construction logic.
 """
 
+import logging
 import uuid
+from functools import lru_cache
 from typing import Annotated
 
 import jwt as pyjwt
@@ -32,6 +34,8 @@ from app.services.resume_service import ResumeService
 from app.services.user_service import UserService
 from app.services.storage import get_storage_service
 
+logger = logging.getLogger(__name__)
+
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 
 _bearer = HTTPBearer(auto_error=False)
@@ -55,22 +59,39 @@ def get_report_repository(session: DbSession) -> ReportRepository:
 
 
 # -- AI Services ------------------------------------------------------------------
+@lru_cache(maxsize=1)
 def get_rag_service() -> "RAGService | None":
-    """Get RAG service if Gemini API key is configured.
-    
-    Returns None if not configured, allowing graceful fallback.
+    """Get the RAG service if a Gemini API key is configured.
+
+    Returns None if RAG is unavailable, so callers fall back gracefully.
+
+    Cached: the embedding client and the Chroma client are process-wide
+    singletons. Building them per request re-opened the Chroma database on
+    every call. The None result is cached too -- a missing key or a broken
+    vector store is a startup-shaped problem, not something to retry on the
+    hot path. Call get_rag_service.cache_clear() in tests that vary settings.
     """
     settings = get_settings()
     if not settings.GEMINI_API_KEY:
+        logger.info("GEMINI_API_KEY is not set; RAG disabled.")
         return None
-    
+
     try:
         embedding_service = EmbeddingService(settings.GEMINI_API_KEY)
         vector_store = get_vector_store(persist_directory=settings.CHROMA_PATH)
-        return RAGService(embedding_service, vector_store)
     except Exception:
-        # Return None if RAG initialization fails; gracefully disable RAG
+        # Disable RAG rather than fail the request -- but say so. Silently
+        # returning None here is how a broken index looks identical to a
+        # working one from the outside.
+        logger.warning(
+            "RAG initialisation failed (path=%s); continuing without retrieval.",
+            settings.CHROMA_PATH,
+            exc_info=True,
+        )
         return None
+
+    logger.info("RAG enabled (chroma_path=%s).", settings.CHROMA_PATH)
+    return RAGService(embedding_service, vector_store)
 
 
 # -- Services ------------------------------------------------------------------
