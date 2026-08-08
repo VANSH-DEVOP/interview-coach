@@ -19,26 +19,30 @@ Things that were wired but did not actually work. All closed; see commits
 - [x] **Gemini reports render an empty summary.** `report-view.tsx:53` reads `detailed_feedback.summary`, but only `HeuristicEvaluator` sets it (`evaluator.py:149`); `GeminiEvaluator` writes only `recommendations` + `per_question` (`evaluator.py:228`). Add `summary` to the Gemini prompt + parse.
   → **Done.** Prompt asks for it, parser reads the usual key aliases, and a score-and-role line is synthesised if the model omits it. Verified against the live model.
 ---
-## Phase 1 — Complete what's half-built (P1)
+## Phase 1 — Complete what's half-built (P1) — mostly done (2026-08-08)
 Scaffolding exists; the feature does not.
 ### Interview flow
-- [ ] **Follow-ups have no resume context.** `interview_service.py:136` calls `follow_up(..., resume_text=None)` and never consults RAG. Pass the session's resume text and add a RAG retrieval keyed on the answer.
+- [x] **Follow-ups have no resume context.** `interview_service.py:136` calls `follow_up(..., resume_text=None)` and never consults RAG. Pass the session's resume text and add a RAG retrieval keyed on the answer.
+  → **Done** (`e1a985f`). `follow_up` seam widened with `resume_id`; retrieval is keyed on question+answer, not the role. Also fixed a latent `MissingGreenlet` crash in the follow-up branch (`session.questions` lazy-loaded on a session fetched without them) — never fired only because the model was 404ing. Replaced with `InterviewRepository.next_sequence_number`.
 - [ ] **Async evaluation.** `complete()` runs the evaluator inline, so ending an interview blocks on a Gemini round-trip. `ReportStatus.PENDING / GENERATING / FAILED` are currently dead code — write the report as `PENDING`, hand off to a worker, and have the frontend poll. (`app/models/evaluation_report.py:16`)
-- [ ] **Abandon / delete a session.** `SessionStatus.CREATED` and `ABANDONED` are unreachable — sessions are created as `IN_PROGRESS` and there is no endpoint to abandon or delete one, even though `complete()` already handles the abandoned case (`interview_service.py:160`).
-- [ ] **Answer timing.** `Answer.duration_seconds` exists in the model, schema, and TS types but is never sent — the interview UI has no timer.
+- [x] **Abandon / delete a session.** (`ac2552f`) `POST /interviews/{id}/abandon` keeps the transcript; `DELETE /interviews/{id}` cascades to questions, answers, and the report (verified against Postgres). `SessionStatus.CREATED` is still unreachable — sessions are created IN_PROGRESS, which is arguably correct; left alone deliberately.
+  ~~`SessionStatus.CREATED` and `ABANDONED` are unreachable~~ — sessions are created as `IN_PROGRESS` and there is no endpoint to abandon or delete one, even though `complete()` already handles the abandoned case (`interview_service.py:160`).
+- [x] **Answer timing.** (`836c0b8`) Per-question timer in the UI, sent with the answer, shown on answered questions. Verified round-trip.
+  - [ ] **Follow-up:** the evaluator still doesn't see timing. Pacing feedback ("4 minutes on a 30-second question") needs `duration` in `QAPair` and the prompt.
 - [ ] **Question controls.** No skip, no re-answer, no regenerate-questions.
-- [ ] **Interview configuration.** Type (behavioral / technical / system design), difficulty, and question count are all decided by the model; expose them on `InterviewCreate`.
+- [x] **Interview configuration.** (`1e09557`, `2a84fae`) `interview_type` / `difficulty` / `question_count` on `InterviewCreate`, persisted via migration 0002, shaping the prompt, with UI selects. Migration verified up→down→up against Postgres with no autogenerate drift. System-design questions are stored as `question_type="technical"` — widening that enum was not needed.
+  - Static fallback pool grew 3 → 10 distinct questions so any allowed count is honoured without repeats; its default output changed 3 → 5.
 ### Resumes
-- [ ] **Re-parse / re-index endpoint.** A parse failure sets `ResumeStatus.FAILED` permanently with no retry path (`resume_service.py:66`), and a resume uploaded before RAG was enabled is never indexed.
+- [x] **Re-parse / re-index endpoint.** (`ddd07b4`) `POST /resumes/{id}/reprocess` re-reads the blob, re-parses, and rebuilds the index (dropping the old one first — chunk ids are positional). Adds `tests/test_resume_service.py`; the service previously had no tests at all.
 - [ ] **Resume preview** in the UI (currently download-only).
 ### Reports & progress tracking
-- [ ] **Progress over time.** The README promises it; the dashboard has three counters and a recent-sessions list (`app/(app)/dashboard/page.tsx`). Needs a score trend across sessions.
-- [ ] **Per-question scores.** `per_question` is passed through raw from the model with no numeric score (`evaluator.py:230`).
+- [x] **Progress over time.** (`e5c23ad`) `GET /reports/progress` + an inline-SVG trend chart on the dashboard. Unscored reports are excluded rather than plotted as zero; `improvement` compares half-means and stays null below 4 sessions.
+- [x] **Per-question scores.** (`63df2f9`) 0-10 per entry, clamped, alias-tolerant, `"8.5/10"` parsed; unparseable stays null rather than becoming 0. Heuristic scores on the same 80-word scale. Colour-coded badges in the report.
 - [ ] **Skill/category breakdown** across reports.
 - [ ] **Report export (PDF) and sharing.**
 ### Frontend
-- [ ] **Pagination controls.** The API is paginated; every page hardcodes `page=1` (`interviews/page.tsx:29`, `reports/page.tsx:26`) with no next/prev UI.
-- [ ] **Expose `/interviews/{id}/reevaluate`** — the endpoint exists and is never called from the frontend.
+- [x] **Pagination controls.** (`6896e83`) Shared `Pagination` component wired into interviews and reports. Verified: 7 records at size=3 paginate with zero overlap.
+- [x] **Expose `/interviews/{id}/reevaluate`** (`6896e83`) — "Re-evaluate" on the session report page. Updates the report in place (same id).
 ---
 ## Phase 2 — Auth & account completeness (P1)
 - [ ] **Logout endpoint.** Logout is client-side cookie clearing only (`use-auth.ts:63`); refresh tokens stay valid until expiry.
@@ -58,7 +62,9 @@ Scaffolding exists; the feature does not.
 - [ ] **No CI at all** despite `origin` and `gitlab` remotes. Pipeline should run `ruff check`, `mypy app`, `pytest`, `npm run typecheck`, `npm run build`.
 - [ ] Migration check in CI (autogenerate produces no diff against models).
 ### Security (P1)
-- [ ] **Rate limiting.** None anywhere — neither on auth endpoints nor on the Gemini-backed routes, where each request costs money and burns a 60 req/min free-tier quota.
+- [x] **Rate limiting.** (`66252e9`) **Pulled forward into Phase 1** — the free tier turned out to be **20 requests/day**, not 60/min, and live verification exhausted it. `app/core/rate_limit.py` (fixed-window, no new dependency); auth keyed by IP, AI/upload keyed by user; 429 in the standard envelope with `Retry-After`. Per-process and burst-tolerant at window boundaries — both documented in the module.
+  - [ ] **Follow-up:** the defaults (20 AI req/user/hour) sit *above* the account's 20/day ceiling, so they bound one user's abuse but not account exhaustion. Lower them, or move off the free tier.
+  - [ ] **Follow-up:** move counters to Redis before running more than one worker.
 - [ ] **httpOnly cookie BFF for tokens.** Tokens currently live in JS-readable cookies (`api-client.ts:35`), flagged as MVP in the code itself.
 - [x] **The Gemini API key is written to the logs in cleartext.** `GeminiClient` passes the key as a `?key=` query param, and httpx logs the full URL at INFO — so every AI call prints the key (seen in the backend container logs on 2026-07-27). Send it as the `x-goog-api-key` header instead, and/or set `logging.getLogger("httpx").setLevel(WARNING)`. Rotate the key that has already been logged.
   → **Done** in both `GeminiClient` and `EmbeddingService`; httpx/httpcore pinned to WARNING. Verified: at root DEBUG the key no longer appears in captured logs.
@@ -96,7 +102,34 @@ Scaffolding exists; the feature does not.
 ___
 ## Discovery 
 - [ ] **User-Data (PII) Masking** the pipeline doesn't handle the user data masking before sending it to the LLM it's a security issue.
-- [ ] **RAG implementation** it's too simple , like I want production level rag implementaion (hybrid-search , langchain, langgraph and all that neccessary items )
+- [ ] **RAG implementation** it's too simple , like I want production level rag implementaion (hybrid-search , langchain, langgraph and all that neccessary items ) ideal pipeline:
+User
+  │
+  ▼
+API Request
+  │
+  ▼
+RequestTimer starts
+  │
+  ▼
+LLM generates answer
+  │
+  ▼
+Cache checked
+  │
+  ▼
+Logger logs JSON
+  │
+  ▼
+MetricsCollector records
+      latency
+      tokens
+      errors
+      cache hit/miss
+  │
+  ▼
+Response returned
+
 - [ ] **Query re-writing** the current pipeline doesn't check for any threats to the prompt injection we might need some query re-writing too.
 - [ ] This treats every error the same:
 expired token (which the API client may already have retried)
@@ -116,6 +149,20 @@ Baseline as of 2026-08-08, unchanged by any Phase 0 commit:
 Worth clearing before CI lands, since CI should fail on these.
 
 ## Suggested next step
-Phase 0 is closed. Per the ordering below, next is **follow-up resume context**
-(`interview_service.py:136` passes `resume_text=None`) — and it is now actually
-worth doing, because RAG retrieval returns real chunks for the first time.
+Phase 0 and most of Phase 1 are closed (2026-08-08). What remains in Phase 1:
+**async evaluation**, **question controls** (skip / re-answer / regenerate),
+**resume preview**, **skill breakdown**, and **report export**.
+
+The highest-value work is now arguably **Phase 3 testing/CI** rather than the
+rest of Phase 1. Three genuine bugs this session were invisible to the test
+suite and only surfaced by driving real HTTP against real Postgres:
+a `MissingGreenlet` in the follow-up path, a mangled migration constraint name,
+and a rate limiter that returned 422 on every route it protected. The test
+fixture that made HTTP testing possible at all was itself only fixed mid-session.
+
+### Testing notes for whoever picks this up
+- `conftest.py` now disposes the SQLAlchemy engine between tests — without it,
+  the second DB-touching HTTP test fails with "attached to a different loop".
+- Prefer `app.dependency_overrides` for HTTP tests; a request that reaches the
+  session dependency with no Postgres re-raises through the test client.
+- Live Gemini verification is limited to **20 requests/day**. Budget it.
