@@ -13,6 +13,7 @@ from app.core.config import get_settings
 from app.core.exceptions import NotFoundError, PayloadTooLargeError, ValidationError
 from app.models.resume import Resume, ResumeStatus
 from app.repositories.resume_repository import ResumeRepository
+from app.services.ai.degradation import record_fallback
 from app.services.storage.base import StorageService
 from app.services.resume_parser import ResumeParser
 
@@ -88,8 +89,12 @@ class ResumeService:
                     f"Indexed resume {resume.id} with {chunk_count} chunks for RAG retrieval"
                 )
             except Exception as e:
-                # Non-blocking: RAG indexing failure doesn't prevent upload
+                # Non-blocking: RAG indexing failure doesn't prevent upload.
+                # Also counted as a degradation so it shows up on /health -- an
+                # unindexed resume means every later question for it is built
+                # from truncated raw text instead of retrieved context.
                 logger.error(f"Failed to index resume {resume.id} for RAG: {e}")
+                record_fallback("index_resume", e)
 
         return resume
 

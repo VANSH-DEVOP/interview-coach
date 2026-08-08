@@ -10,6 +10,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.services.ai.degradation import record_fallback
+
 if TYPE_CHECKING:
     from app.services.ai.rag import RAGService
 
@@ -89,7 +91,8 @@ class FallbackQuestionGenerator(QuestionGenerator):
             return await self._primary.initial_questions(
                 target_role=target_role, resume_text=resume_text, resume_id=resume_id
             )
-        except Exception:  # noqa: BLE001 - any provider failure -> safe fallback
+        except Exception as exc:  # noqa: BLE001 - any provider failure -> safe fallback
+            record_fallback("initial_questions", exc)
             return await self._fallback.initial_questions(
                 target_role=target_role, resume_text=resume_text, resume_id=resume_id
             )
@@ -101,7 +104,8 @@ class FallbackQuestionGenerator(QuestionGenerator):
             return await self._primary.follow_up(
                 question=question, answer=answer, resume_text=resume_text
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            record_fallback("follow_up", exc)
             return await self._fallback.follow_up(
                 question=question, answer=answer, resume_text=resume_text
             )

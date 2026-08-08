@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
+from app.services.ai.degradation import record_fallback
+
 
 def _first(payload: dict[str, Any], keys: list[str], default: Any) -> Any:
     """Return the first present, non-null value among candidate keys.
@@ -244,7 +246,8 @@ class FallbackEvaluator(Evaluator):
             return await self._primary.evaluate(
                 target_role=target_role, transcript=transcript
             )
-        except Exception:  # noqa: BLE001 - any provider failure -> safe fallback
+        except Exception as exc:  # noqa: BLE001 - any provider failure -> safe fallback
+            record_fallback("evaluate", exc)
             return await self._fallback.evaluate(
                 target_role=target_role, transcript=transcript
             )
