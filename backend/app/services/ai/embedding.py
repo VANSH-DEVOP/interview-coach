@@ -19,10 +19,16 @@ class EmbeddingError(RuntimeError):
 class EmbeddingService:
     """Generate embeddings for text using Google's Gemini embedding model."""
 
-    def __init__(self, api_key: str, *, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str = "models/gemini-embedding-001",
+        timeout: float = 30.0,
+    ) -> None:
         self._api_key = api_key
         self._timeout = timeout
-        self._model = "models/embedding-001"
+        self._model = model
 
     async def embed_text(self, text: str) -> list[float]:
         """Generate embedding for a single text.

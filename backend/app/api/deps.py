@@ -77,7 +77,9 @@ def get_rag_service() -> "RAGService | None":
         return None
 
     try:
-        embedding_service = EmbeddingService(settings.GEMINI_API_KEY)
+        embedding_service = EmbeddingService(
+            settings.GEMINI_API_KEY, model=settings.GEMINI_EMBEDDING_MODEL
+        )
         vector_store = get_vector_store(persist_directory=settings.CHROMA_PATH)
     except Exception:
         # Disable RAG rather than fail the request -- but say so. Silently

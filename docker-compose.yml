@@ -33,6 +33,7 @@ services:
       CORS_ORIGINS: '["http://localhost:3000"]'
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
+      GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-models/gemini-embedding-001}
       CHROMA_PATH: /var/lib/interviewpilot/chroma
       STORAGE_BACKEND: local
       STORAGE_LOCAL_PATH: /var/lib/interviewpilot/storage

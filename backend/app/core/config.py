@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     # app falls back to deterministic local implementations (no key required).
     GEMINI_API_KEY: str | None = None
     GEMINI_MODEL: str = "gemini-flash-latest"
+    # Google retires model IDs, and a retired ID is a 404 that the fallback
+    # layer hides. Keep these overridable so a rotation is an env change, and
+    # check `GET /v1beta/models` for the key in use before changing a default.
+    GEMINI_EMBEDDING_MODEL: str = "models/gemini-embedding-001"
 
     # -- Vector store (RAG) -----------------------------------------------------
     # Must point at durable storage. On a throwaway path (/tmp, a container

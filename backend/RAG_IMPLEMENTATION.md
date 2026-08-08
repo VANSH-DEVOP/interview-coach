@@ -108,7 +108,7 @@ embedding_service = EmbeddingService(api_key="AIzaSyD...")
 
 # Single embedding
 embedding = await embedding_service.embed_text("Python expert")
-# Returns: list[float] (768-dimensional vector)
+# Returns: list[float] (3072-dimensional vector)
 
 # Batch embeddings
 embeddings = await embedding_service.embed_batch([
@@ -120,8 +120,11 @@ embeddings = await embedding_service.embed_batch([
 ```
 
 **Features:**
-- Uses `models/embedding-001` (Gemini's embedding model)
-- 768-dimensional vectors
+- Uses `models/gemini-embedding-001`, overridable via `GEMINI_EMBEDDING_MODEL`
+- 3072-dimensional vectors
+- Note: the previous default, `models/embedding-001`, was retired by Google and
+  returns HTTP 404. Verify any replacement against `GET /v1beta/models` for the
+  key in use — a retired ID fails silently behind the fallback layer.
 - Async/await support
 - Batch processing with error tolerance
 - Graceful error handling
