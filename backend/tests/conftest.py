@@ -121,10 +121,16 @@ def database_url() -> str:
     try:
         asyncio.run(_create_database_if_missing(url))
     except Exception as exc:  # noqa: BLE001 - any connection failure means skip
-        pytest.skip(
+        message = (
             f"No test database reachable ({type(exc).__name__}: {exc}). "
             "Start Postgres and set POSTGRES_HOST/PORT or TEST_DATABASE_URL."
         )
+        # CI sets REQUIRE_TEST_DATABASE. Skipping there would turn a broken
+        # database service into a green build that ran none of the coverage it
+        # was supposed to -- the worst possible outcome for a pipeline.
+        if os.getenv("REQUIRE_TEST_DATABASE"):
+            pytest.fail(message, pytrace=False)
+        pytest.skip(message)
     _run_migrations(url)
     return url
 
