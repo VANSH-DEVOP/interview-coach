@@ -53,14 +53,17 @@ Scaffolding exists; the feature does not.
 - [ ] **Account deletion** (cascade resumes, sessions, reports, blobs, and vector index).
 ---
 ## Phase 3 — Production readiness (P1/P2)
-### Testing (P1)
-- [ ] **API-level tests.** The only HTTP test is `/health` (`tests/api/test_health.py`). Nothing covers auth, resumes, interviews, or reports over HTTP.
-- [ ] **Test database fixture.** No DB-backed tests, so repositories and migrations are unverified. Add a throwaway Postgres (testcontainers or a CI service) + transactional fixture.
-- [ ] **Frontend tests.** None exist. Start with `api-client` refresh-retry logic and the interview page state machine.
-- [ ] **E2E smoke test** (register → upload resume → interview → report).
-### CI/CD (P1)
-- [ ] **No CI at all** despite `origin` and `gitlab` remotes. Pipeline should run `ruff check`, `mypy app`, `pytest`, `npm run typecheck`, `npm run build`.
-- [ ] Migration check in CI (autogenerate produces no diff against models).
+### Testing (P1) — ✅ COMPLETE (2026-08-08)
+- [x] **API-level tests.** (`9d61f64`) 63 tests across auth / interviews / resumes / reports. The ownership cases needed a real database: the service fakes implement `get_owned` themselves, so they prove the service *calls* it, not that the SQL filters by user.
+- [x] **Test database fixture.** (`33725c5`) `api` fixture on a real Postgres. Schema built by running the **actual migrations**, not `create_all`. Per-test outer transaction + `join_transaction_mode="create_savepoint"`, so the app's own `commit()` works and nothing is durable. Skips without Postgres; `REQUIRE_TEST_DATABASE=1` (set in CI) turns that skip into a failure.
+- [x] **Frontend tests.** (`908a24d`) vitest 4 + jsdom + RTL. 26 tests: `api-client` refresh-and-retry in depth, plus the `Pagination` component. The interview page state machine is still uncovered.
+- [x] **E2E smoke test.** (`b82e1c4`) Full journey plus the abandon path.
+### CI/CD (P1) — ✅ COMPLETE (2026-08-08)
+- [x] **CI pipeline.** (`df3e09c`, `47965b9`, `e7115c4`) `.github/workflows/ci.yml`. Backend job with a Postgres 16 service: ruff, mypy, migrate, drift check, downgrade/upgrade round trip, pytest. Frontend job: typecheck, vitest, build. **Green: 203 backend + 26 frontend, zero skips.**
+- [x] **Migration drift check.** `backend/scripts/check_migration_drift.py` compares `Base.metadata` against the migrated database via alembic's autogenerate API. (`alembic revision --autogenerate` has no output-dir flag, so the generate-and-grep approach does not work.) Verified in both directions — it catches an added column and exits 1.
+  - Note: CI **only runs on GitHub**. The `gitlab` remote has no pipeline.
+- [ ] **Follow-up:** no coverage measurement or threshold yet.
+- [ ] **Follow-up:** no dependency scanning. `npm audit` reports pre-existing high findings in `next`, `postcss`, and `sharp`.
 ### Security (P1)
 - [x] **Rate limiting.** (`66252e9`) **Pulled forward into Phase 1** — the free tier turned out to be **20 requests/day**, not 60/min, and live verification exhausted it. `app/core/rate_limit.py` (fixed-window, no new dependency); auth keyed by IP, AI/upload keyed by user; 429 in the standard envelope with `Retry-After`. Per-process and burst-tolerant at window boundaries — both documented in the module.
   - [ ] **Follow-up:** the defaults (20 AI req/user/hour) sit *above* the account's 20/day ceiling, so they bound one user's abuse but not account exhaustion. Lower them, or move off the free tier.
@@ -142,11 +145,12 @@ A more informative approach would distinguish authentication failures (401/403) 
 - [x] **Changed Gemini_api_model** I changed gemini model to gemini-flash-latest and the test cases worked properly , I hanvn't checked for the application yet.
   → Confirmed correct: `gemini-flash-latest` is present in `GET /v1beta/models` and `generate_json` returns 200 against the live API. Propagated to `.env.example` and `docker-compose.yml`, which still said `gemini-1.5-flash`.
 
-## Known lint debt (pre-existing, not introduced by Phase 0)
-Baseline as of 2026-08-08, unchanged by any Phase 0 commit:
-- `ruff check app` — **13 errors**: 11× `E402` (module-level import not at top of file) in `interview_service.py`, 2× `F401` (unused `typing.Any`) in `embedding.py` and `gemini.py`.
-- `mypy app` — **8 errors**, mostly chromadb stub mismatches in `vector_store.py` (`query_embeddings` typing, indexing an optional result).
-Worth clearing before CI lands, since CI should fail on these.
+## Known lint debt — ✅ CLEARED (2026-08-08, `d136207`)
+Was 13 ruff + 8 mypy errors. Now **zero of each**, and CI fails on any regression.
+One was a real latent bug: `evaluator.py` called `.split()` on a `str | None`.
+Linters are now **pinned** (`ruff==0.16.2`, `mypy==2.1.0`) with an explicit
+`[tool.ruff.lint] select`. The first CI run failed on a rule local ruff did not
+have — an unpinned range guarantees CI and developers eventually disagree.
 
 ## Suggested next step
 Phase 0 and most of Phase 1 are closed (2026-08-08). What remains in Phase 1:
