@@ -53,8 +53,10 @@ class EmbeddingService:
 
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
+                # Header, not `?key=`: httpx logs the full URL, which would put
+                # the API key in cleartext in the application logs.
                 response = await client.post(
-                    url, params={"key": self._api_key}, json=body
+                    url, headers={"x-goog-api-key": self._api_key}, json=body
                 )
         except httpx.HTTPError as exc:
             raise EmbeddingError(f"Embedding request failed: {exc}") from exc

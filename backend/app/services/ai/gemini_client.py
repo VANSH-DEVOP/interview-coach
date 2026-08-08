@@ -38,8 +38,11 @@ class GeminiClient:
         }
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
+                # The key goes in a header, never in the query string: httpx
+                # logs the full request URL, so `?key=...` printed the secret
+                # into the application logs on every call.
                 response = await client.post(
-                    url, params={"key": self._api_key}, json=body
+                    url, headers={"x-goog-api-key": self._api_key}, json=body
                 )
         except httpx.HTTPError as exc:  # pragma: no cover - network failure
             raise GeminiError(f"Gemini request failed: {exc}") from exc

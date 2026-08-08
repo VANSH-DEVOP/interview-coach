@@ -38,6 +38,9 @@ def configure_logging() -> None:
     root.handlers = [handler]
     root.setLevel(logging.DEBUG if settings.DEBUG else logging.INFO)
 
-    # Quieten noisy third-party loggers.
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    # Quieten noisy third-party loggers. Pinned to WARNING even under DEBUG:
+    # httpcore emits ~15 lines per AI call (connect, TLS handshake, request,
+    # response, teardown), which buried the one line that mattered when the
+    # Gemini model started returning 404.
+    for noisy in ("uvicorn.access", "sqlalchemy.engine", "httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
