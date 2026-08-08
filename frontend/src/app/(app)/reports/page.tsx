@@ -8,6 +8,7 @@ import { api } from "@/lib/api-client";
 import type { EvaluationReport, Page } from "@/types";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
+import { Pagination } from "@/components/shared/pagination";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -19,12 +20,17 @@ const STATUS_VARIANT: Record<EvaluationReport["status"], "success" | "secondary"
     failed: "destructive",
   };
 
+const PAGE_SIZE = 20;
+
 export default function ReportsPage() {
   const [reports, setReports] = useState<Page<EvaluationReport> | null>(null);
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
-    void api.get<Page<EvaluationReport>>("/reports?page=1&size=20").then(setReports);
-  }, []);
+    void api
+      .get<Page<EvaluationReport>>(`/reports?page=${page}&size=${PAGE_SIZE}`)
+      .then(setReports);
+  }, [page]);
 
   return (
     <>
@@ -40,6 +46,7 @@ export default function ReportsPage() {
           description="Complete an interview session and your evaluation report will appear here."
         />
       ) : (
+        <div className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-2">
           {reports?.items.map((report) => (
             <Link key={report.id} href={`/reports/${report.id}`} className="block">
@@ -65,6 +72,16 @@ export default function ReportsPage() {
               </Card>
             </Link>
           ))}
+        </div>
+        {reports && (
+          <Pagination
+            page={reports.page}
+            size={reports.size}
+            total={reports.total}
+            onPageChange={setPage}
+            label="reports"
+          />
+        )}
         </div>
       )}
     </>

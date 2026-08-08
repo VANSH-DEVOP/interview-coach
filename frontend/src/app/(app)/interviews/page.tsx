@@ -18,6 +18,7 @@ import {
 } from "@/types";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
+import { Pagination } from "@/components/shared/pagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,6 +39,8 @@ const DIFFICULTIES: { value: DifficultyLevel; label: string }[] = [
   { value: "senior", label: "Senior (5+ years)" },
 ];
 
+const PAGE_SIZE = 20;
+
 const QUESTION_COUNTS = Array.from(
   { length: MAX_QUESTION_COUNT - MIN_QUESTION_COUNT + 1 },
   (_, i) => MIN_QUESTION_COUNT + i,
@@ -47,18 +50,19 @@ export default function InterviewsPage() {
   const router = useRouter();
   const [sessions, setSessions] = useState<Page<InterviewSession> | null>(null);
   const [resumes, setResumes] = useState<Resume[]>([]);
+  const [page, setPage] = useState(1);
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const load = useCallback(async () => {
     const [sessionsPage, resumesPage] = await Promise.all([
-      api.get<Page<InterviewSession>>("/interviews?page=1&size=20"),
+      api.get<Page<InterviewSession>>(`/interviews?page=${page}&size=${PAGE_SIZE}`),
       api.get<Page<Resume>>("/resumes?page=1&size=50"),
     ]);
     setSessions(sessionsPage);
     setResumes(resumesPage.items);
-  }, []);
+  }, [page]);
 
   useEffect(() => {
     void load();
@@ -198,6 +202,7 @@ export default function InterviewsPage() {
           action={<Button onClick={() => setShowForm(true)}>New interview</Button>}
         />
       ) : (
+        <div className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-2">
           {sessions?.items.map((session) => (
             <Link key={session.id} href={`/interviews/${session.id}`} className="block">
@@ -223,6 +228,16 @@ export default function InterviewsPage() {
               </Card>
             </Link>
           ))}
+        </div>
+        {sessions && (
+          <Pagination
+            page={sessions.page}
+            size={sessions.size}
+            total={sessions.total}
+            onPageChange={setPage}
+            label="interviews"
+          />
+        )}
         </div>
       )}
     </>
