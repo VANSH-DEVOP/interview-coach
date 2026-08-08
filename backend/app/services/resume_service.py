@@ -14,8 +14,8 @@ from app.core.exceptions import NotFoundError, PayloadTooLargeError, ValidationE
 from app.models.resume import Resume, ResumeStatus
 from app.repositories.resume_repository import ResumeRepository
 from app.services.ai.degradation import record_fallback
-from app.services.storage.base import StorageService
 from app.services.resume_parser import ResumeParser
+from app.services.storage.base import StorageService
 
 if TYPE_CHECKING:
     from app.services.ai.rag import RAGService

@@ -2,8 +2,8 @@
 
 import asyncio
 
-from app.services.ai.gemini_client import GeminiClient, GeminiError
 from app.services.ai.evaluator import QAPair
+from app.services.ai.gemini_client import GeminiClient, GeminiError
 
 
 async def test_gemini_question_generation():

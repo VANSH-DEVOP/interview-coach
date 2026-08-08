@@ -15,9 +15,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import rate_limit
+from app.core.config import get_settings
 from app.core.exceptions import UnauthorizedError
 from app.core.security import decode_token
-from app.core.config import get_settings
 from app.db.session import get_session
 from app.models.user import User
 from app.repositories.interview_repository import InterviewRepository
@@ -25,16 +25,16 @@ from app.repositories.report_repository import ReportRepository
 from app.repositories.resume_repository import ResumeRepository
 from app.repositories.user_repository import UserRepository
 from app.services.ai.base import get_question_generator
-from app.services.ai.evaluator import get_evaluator
 from app.services.ai.embedding import EmbeddingService
-from app.services.ai.vector_store import get_vector_store
+from app.services.ai.evaluator import get_evaluator
 from app.services.ai.rag import RAGService
+from app.services.ai.vector_store import get_vector_store
 from app.services.auth_service import AuthService
 from app.services.interview_service import InterviewService
 from app.services.report_service import ReportService
 from app.services.resume_service import ResumeService
-from app.services.user_service import UserService
 from app.services.storage import get_storage_service
+from app.services.user_service import UserService
 
 logger = logging.getLogger(__name__)
 

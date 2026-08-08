@@ -103,7 +103,8 @@ class ReportRepository(BaseRepository[EvaluationReport]):
         stmt = base.order_by(EvaluationReport.created_at.desc()).offset(offset).limit(limit)
         items = list((await self.session.execute(stmt)).scalars().all())
 
-        from sqlalchemy import func, select as sa_select
+        from sqlalchemy import func
+        from sqlalchemy import select as sa_select
 
         count_stmt = (
             sa_select(func.count())

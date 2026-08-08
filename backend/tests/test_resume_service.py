@@ -12,9 +12,9 @@ import pytest
 
 from app.core.exceptions import NotFoundError
 from app.models.resume import Resume, ResumeStatus
+from app.services import resume_service as resume_service_module
 from app.services.ai import degradation
 from app.services.resume_service import ResumeService
-from app.services import resume_service as resume_service_module
 
 
 @pytest.fixture(autouse=True)

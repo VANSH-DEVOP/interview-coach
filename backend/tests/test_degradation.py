@@ -16,8 +16,8 @@ from app.services.ai.base import (
     StaticQuestionGenerator,
 )
 from app.services.ai.evaluator import (
-    Evaluator,
     EvaluationResult,
+    Evaluator,
     FallbackEvaluator,
     HeuristicEvaluator,
     QAPair,

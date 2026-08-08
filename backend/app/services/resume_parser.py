@@ -3,8 +3,8 @@
 import logging
 from io import BytesIO
 
-from pypdf import PdfReader
 from docx import Document
+from pypdf import PdfReader
 
 logger = logging.getLogger(__name__)
 

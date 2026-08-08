@@ -3,13 +3,13 @@
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlalchemy.pool import NullPool
 
+import app.models  # noqa: F401  (registers all tables on Base.metadata)
+from alembic import context
 from app.core.config import get_settings
 from app.db.base import Base
-import app.models  # noqa: F401  (registers all tables on Base.metadata)
 
 config = context.config
 if config.config_file_name is not None:

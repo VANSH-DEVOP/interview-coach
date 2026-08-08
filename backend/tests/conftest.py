@@ -100,8 +100,9 @@ async def _create_database_if_missing(url: str) -> None:
 
 
 def _run_migrations(url: str) -> None:
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     config = Config(str(BACKEND_DIR / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_DIR / "alembic"))

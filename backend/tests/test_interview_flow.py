@@ -25,8 +25,8 @@ from app.models.interview_session import (
     SessionStatus,
 )
 from app.models.question import Question
-from app.schemas.interview import AnswerCreate, InterviewCreate
 from app.models.resume import Resume
+from app.schemas.interview import AnswerCreate, InterviewCreate
 from app.services.ai.base import GeneratedQuestion, QuestionGenerator, StaticQuestionGenerator
 from app.services.ai.evaluator import HeuristicEvaluator
 from app.services.interview_service import InterviewService

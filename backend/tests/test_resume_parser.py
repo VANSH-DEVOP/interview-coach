@@ -1,9 +1,10 @@
 """Tests for resume text extraction."""
 
-import pytest
 from io import BytesIO
-from pypdf import PdfWriter
+
+import pytest
 from docx import Document
+from pypdf import PdfWriter
 
 from app.services.resume_parser import ResumeParser
 
