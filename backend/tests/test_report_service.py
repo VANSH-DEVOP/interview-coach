@@ -16,13 +16,18 @@ BASE = datetime(2026, 1, 1)
 
 
 class _FakeReportRepository:
-    def __init__(self, rows) -> None:
+    def __init__(self, rows, strengths=None, weaknesses=None) -> None:
         self._rows = rows
+        self._strengths = strengths or []
+        self._weaknesses = weaknesses or []
         self.limit_used: int | None = None
 
     async def score_history(self, user_id, *, limit=50):
         self.limit_used = limit
         return self._rows
+
+    async def feedback_history(self, user_id, *, limit=50):
+        return self._strengths, self._weaknesses
 
 
 def _row(score: float, *, day: int = 0, itype: str = "mixed", difficulty: str = "mid"):
@@ -37,8 +42,8 @@ def _row(score: float, *, day: int = 0, itype: str = "mixed", difficulty: str = 
     )
 
 
-def _service(rows):
-    return ReportService(_FakeReportRepository(rows))
+def _service(rows, strengths=None, weaknesses=None):
+    return ReportService(_FakeReportRepository(rows, strengths, weaknesses))
 
 
 async def test_no_history_returns_an_empty_summary():

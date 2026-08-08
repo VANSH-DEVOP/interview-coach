@@ -92,6 +92,13 @@ export interface ProgressPoint {
   scored_at: string;
 }
 
+export interface SkillTheme {
+  theme: string;
+  count: number;
+  /** The user's own feedback wording, so the label is never the only thing shown. */
+  examples: string[];
+}
+
 export interface ProgressSummary {
   points: ProgressPoint[];
   total_scored: number;
@@ -101,6 +108,8 @@ export interface ProgressSummary {
   /** Recent-half mean minus earlier-half mean; null until enough history. */
   improvement: number | null;
   average_by_type: Record<string, number>;
+  recurring_strengths: SkillTheme[];
+  recurring_weaknesses: SkillTheme[];
 }
 
 export interface PerQuestionFeedback {

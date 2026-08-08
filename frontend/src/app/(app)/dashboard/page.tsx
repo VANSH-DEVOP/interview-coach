@@ -11,13 +11,20 @@ import type {
   Page,
   ProgressSummary,
   Resume,
+  SkillTheme,
 } from "@/types";
 import { PageHeader } from "@/components/shared/page-header";
 import { ScoreTrend } from "@/components/shared/score-trend";
 import { StatCard } from "@/components/shared/stat-card";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 interface DashboardData {
@@ -30,6 +37,52 @@ interface DashboardData {
 /** "+1.4" / "-0.7" / "0.0" — sign is the point, so always show it. */
 function formatDelta(value: number): string {
   return `${value > 0 ? "+" : ""}${value.toFixed(1)}`;
+}
+
+/** Recurring feedback themes, with the user's own wording as evidence. */
+function ThemeCard({
+  title,
+  description,
+  themes,
+  tone,
+}: {
+  title: string;
+  description: string;
+  themes: SkillTheme[];
+  tone: "success" | "destructive";
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {themes.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Nothing recurring yet.</p>
+        ) : (
+          <ul className="space-y-3">
+            {themes.map((theme) => (
+              <li key={theme.theme}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium">{theme.theme}</span>
+                  <Badge variant={tone}>
+                    {theme.count}
+                    {theme.count === 1 ? " mention" : " mentions"}
+                  </Badge>
+                </div>
+                {theme.examples[0] && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    &ldquo;{theme.examples[0]}&rdquo;
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 export default function DashboardPage() {
@@ -126,6 +179,25 @@ export default function DashboardPage() {
           )}
         </CardContent>
       </Card>
+
+      {progress &&
+        (progress.recurring_weaknesses.length > 0 ||
+          progress.recurring_strengths.length > 0) && (
+          <div className="grid gap-4 sm:grid-cols-2">
+            <ThemeCard
+              title="What keeps coming up"
+              description="Recurring themes in your areas to improve."
+              themes={progress.recurring_weaknesses}
+              tone="destructive"
+            />
+            <ThemeCard
+              title="What you consistently do well"
+              description="Recurring themes in your strengths."
+              themes={progress.recurring_strengths}
+              tone="success"
+            />
+          </div>
+        )}
 
       <Card>
         <CardHeader>

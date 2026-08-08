@@ -92,6 +92,31 @@ class ReportRepository(BaseRepository[EvaluationReport]):
             for row in reversed(rows)
         ]
 
+    async def feedback_history(
+        self, user_id: uuid.UUID, *, limit: int = 50
+    ) -> tuple[list, list]:
+        """Every strength and weakness the user has been given, flattened.
+
+        Returns (strengths, weaknesses) as raw JSONB contents; callers are
+        responsible for coercing them, since the column holds whatever the
+        model produced.
+        """
+        stmt = (
+            select(EvaluationReport.strengths, EvaluationReport.weaknesses)
+            .join(InterviewSession, EvaluationReport.session_id == InterviewSession.id)
+            .where(InterviewSession.user_id == user_id)
+            .order_by(EvaluationReport.created_at.desc())
+            .limit(limit)
+        )
+        rows = (await self.session.execute(stmt)).all()
+
+        strengths: list = []
+        weaknesses: list = []
+        for row in rows:
+            strengths.extend(row[0] or [])
+            weaknesses.extend(row[1] or [])
+        return strengths, weaknesses
+
     async def list_for_user(
         self, user_id: uuid.UUID, *, offset: int, limit: int
     ) -> tuple[list[EvaluationReport], int]:

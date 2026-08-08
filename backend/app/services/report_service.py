@@ -9,7 +9,8 @@ import uuid
 from collections import defaultdict
 
 from app.repositories.report_repository import ReportRepository
-from app.schemas.report import ProgressPoint, ProgressSummary
+from app.schemas.report import ProgressPoint, ProgressSummary, SkillTheme
+from app.services import skill_themes
 
 # Below this many scored sessions, an "improvement" figure is noise dressed up
 # as a trend. Four is the smallest history that splits into two halves of two.
@@ -26,6 +27,15 @@ class ReportService:
 
     async def progress(self, user_id: uuid.UUID) -> ProgressSummary:
         rows = await self.reports.score_history(user_id, limit=HISTORY_LIMIT)
+        raw_strengths, raw_weaknesses = await self.reports.feedback_history(
+            user_id, limit=HISTORY_LIMIT
+        )
+        recurring_strengths = [
+            SkillTheme(**theme) for theme in skill_themes.summarise(raw_strengths)
+        ]
+        recurring_weaknesses = [
+            SkillTheme(**theme) for theme in skill_themes.summarise(raw_weaknesses)
+        ]
 
         points = [
             ProgressPoint(
@@ -49,6 +59,10 @@ class ReportService:
                 latest_score=None,
                 improvement=None,
                 average_by_type={},
+                # Feedback can exist without a score (a report that failed
+                # after partially writing), so these are still worth returning.
+                recurring_strengths=recurring_strengths,
+                recurring_weaknesses=recurring_weaknesses,
             )
 
         scores = [p.score for p in points]
@@ -68,6 +82,8 @@ class ReportService:
                 name: round(sum(values) / len(values), 2)
                 for name, values in sorted(by_type.items())
             },
+            recurring_strengths=recurring_strengths,
+            recurring_weaknesses=recurring_weaknesses,
         )
 
 

@@ -20,6 +20,14 @@ class ProgressPoint(BaseModel):
     scored_at: datetime
 
 
+class SkillTheme(BaseModel):
+    """A recurring theme in feedback, with the user's own wording as evidence."""
+
+    theme: str
+    count: int
+    examples: list[str]
+
+
 class ProgressSummary(BaseModel):
     """Score trend across a user's completed interviews."""
 
@@ -34,6 +42,11 @@ class ProgressSummary(BaseModel):
     improvement: float | None
     # Average score per interview type, for spotting a weak area.
     average_by_type: dict[str, float]
+    # Recurring themes across all feedback, most frequent first. The weaknesses
+    # are the actionable half: "you have been told to quantify impact in five
+    # interviews" is worth more than five separately-worded reminders.
+    recurring_strengths: list[SkillTheme]
+    recurring_weaknesses: list[SkillTheme]
 
 
 class ReportRead(BaseModel):

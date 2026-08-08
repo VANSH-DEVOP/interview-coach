@@ -8,6 +8,7 @@ not that the SQL actually filters by user. Only a real database shows that.
 import uuid
 
 import pytest
+from sqlalchemy import select
 
 
 @pytest.fixture
@@ -357,6 +358,51 @@ async def test_progress_is_scoped_to_the_user(api, registered_user, other_user):
     body = (await api.get("/api/v1/reports/progress", headers=other_user["headers"])).json()
 
     assert body["total_scored"] == 0
+
+
+async def test_progress_aggregates_recurring_feedback_themes(
+    api, registered_user, db_session
+):
+    """Feedback phrased differently across reports collapses into one theme."""
+    from app.models.evaluation_report import EvaluationReport
+
+    headers = registered_user["headers"]
+    phrasings = [
+        ["Quantify your achievements."],
+        ["Add metrics to show impact."],
+        ["No numbers were given."],
+    ]
+    for weakness in phrasings:
+        session = await _create_session(api, headers)
+        await api.post(f"/api/v1/interviews/{session['id']}/complete", headers=headers)
+        report = (
+            await db_session.execute(
+                select(EvaluationReport).where(
+                    EvaluationReport.session_id == uuid.UUID(session["id"])
+                )
+            )
+        ).scalar_one()
+        report.weaknesses = weakness
+        await db_session.commit()
+
+    body = (await api.get("/api/v1/reports/progress", headers=headers)).json()
+
+    top = body["recurring_weaknesses"][0]
+    assert top["theme"] == "Quantifying impact"
+    assert top["count"] == 3, "three phrasings of one problem should be one theme"
+    assert top["examples"], "the label alone is not actionable"
+
+
+async def test_progress_themes_are_scoped_to_the_user(api, registered_user, other_user):
+    session = await _create_session(api, registered_user["headers"])
+    await api.post(
+        f"/api/v1/interviews/{session['id']}/complete", headers=registered_user["headers"]
+    )
+
+    body = (await api.get("/api/v1/reports/progress", headers=other_user["headers"])).json()
+
+    assert body["recurring_weaknesses"] == []
+    assert body["recurring_strengths"] == []
 
 
 async def test_progress_route_is_not_shadowed_by_the_report_id_route(api, registered_user):
