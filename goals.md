@@ -3,14 +3,21 @@ Living checklist of remaining work. Derived from a full codebase read on **2026-
 Legend: `[ ]` todo · `[~]` partially done · `[x]` done
 Priority: **P0** blocking/broken · **P1** high value · **P2** nice to have
 ---
-## Phase 0 — Broken / blocking (P0)
-Things that are wired but do not actually work today. Do these first.
-- [ ] **Test suite cannot import.** `chromadb` is in `pyproject.toml` but not installed in `.venv/` or `backend/.venv/`; `app/services/ai/vector_store.py:11` imports it at module scope and `app/api/deps.py` pulls it in transitively, so *every* test fails at conftest import. Fix by `pip install -e ".[dev]"`, and consider making the chroma import lazy so the app boots without the RAG extra.
-- [ ] **ChromaDB index is ephemeral.** Persist directory is hardcoded to `/tmp/interviewpilot/chroma` (`app/api/deps.py:70`) and is not a Docker volume — every restart wipes the resume index and RAG silently degrades to `resume_text[:4000]`. Move to a configured path (`CHROMA_PATH` setting) + named volume in `docker-compose.yml`.
-- [ ] **RAG services are rebuilt per request.** `get_rag_service()` constructs a new `EmbeddingService` and Chroma client on every call. Cache them (module-level `@lru_cache` or app state/lifespan).
-- [ ] **Every Gemini call 404s — the configured model is retired.** Observed **2026-07-27**: every AI-backed request logs `POST .../v1beta/models/gemini-1.5-flash:generateContent → 404 Not Found` and the route still returns `201`. `GEMINI_MODEL` defaults to `gemini-1.5-flash` (`app/core/config.py:54`, mirrored in `.env.example:37`), which no longer exists on the v1beta endpoint. **Nothing in the product has ever used real AI output** — every question, follow-up, and report currently comes from the deterministic fallbacks. Move to a current model and verify with `GET /v1beta/models` for the key in use. Check `EmbeddingService`'s `models/embedding-001` (`app/services/ai/embedding.py:25`) the same way — if it 404s too, RAG has been silently no-op as well.
-- [ ] **Silent AI failures.** ↑ The 404 above went unnoticed for exactly this reason: `FallbackQuestionGenerator` / `FallbackEvaluator` swallow every exception with no logging (`app/services/ai/base.py:92`, `:104`), so a dead model, a bad key, and "the AI is just generic" all look identical from the outside. Log at WARNING with the provider error before falling back, and surface a degraded-mode signal (health check field or a response flag) so this can't hide again.
-- [ ] **Gemini reports render an empty summary.** `report-view.tsx:53` reads `detailed_feedback.summary`, but only `HeuristicEvaluator` sets it (`evaluator.py:149`); `GeminiEvaluator` writes only `recommendations` + `per_question` (`evaluator.py:228`). Add `summary` to the Gemini prompt + parse.
+## Phase 0 — Broken / blocking (P0) — ✅ COMPLETE (2026-08-08)
+Things that were wired but did not actually work. All closed; see commits
+`df97c9a`, `4f660df`, `7e93bea`, `f4c1b8b`, `b637e70`, `7916278`, `e0e1ad6`.
+- [x] **Test suite cannot import.** `chromadb` is in `pyproject.toml` but not installed in `.venv/` or `backend/.venv/`; `app/services/ai/vector_store.py:11` imports it at module scope and `app/api/deps.py` pulls it in transitively, so *every* test fails at conftest import. Fix by `pip install -e ".[dev]"`, and consider making the chroma import lazy so the app boots without the RAG extra.
+  → **Done.** Deps installed; the chromadb import is now deferred into `ChromaVectorStore.__init__` and translated into `VectorStoreError`. 59 tests pass.
+- [x] **ChromaDB index is ephemeral.** Persist directory is hardcoded to `/tmp/interviewpilot/chroma` (`app/api/deps.py:70`) and is not a Docker volume — every restart wipes the resume index and RAG silently degrades to `resume_text[:4000]`. Move to a configured path (`CHROMA_PATH` setting) + named volume in `docker-compose.yml`.
+  → **Done.** `CHROMA_PATH` setting (default `/var/lib/interviewpilot/chroma`), `chroma_data` named volume, and the mount point is `mkdir`+`chown`ed in the Dockerfile so the non-root user can write to a freshly seeded volume.
+- [x] **RAG services are rebuilt per request.** `get_rag_service()` constructs a new `EmbeddingService` and Chroma client on every call. Cache them (module-level `@lru_cache` or app state/lifespan).
+  → **Done.** `@lru_cache(maxsize=1)`; tests that vary settings must call `get_rag_service.cache_clear()`.
+- [x] **Every Gemini call 404s — the configured model is retired.** Observed **2026-07-27**: every AI-backed request logs `POST .../v1beta/models/gemini-1.5-flash:generateContent → 404 Not Found` and the route still returns `201`. `GEMINI_MODEL` defaults to `gemini-1.5-flash` (`app/core/config.py:54`, mirrored in `.env.example:37`), which no longer exists on the v1beta endpoint. **Nothing in the product has ever used real AI output** — every question, follow-up, and report currently comes from the deterministic fallbacks. Move to a current model and verify with `GET /v1beta/models` for the key in use. Check `EmbeddingService`'s `models/embedding-001` (`app/services/ai/embedding.py:25`) the same way — if it 404s too, RAG has been silently no-op as well.
+  → **Done, and the suspicion was correct.** `gemini-flash-latest` is valid. `models/embedding-001` **is also retired** — absent from `GET /v1beta/models` and 404 on `embedContent`, so RAG had *never* produced a single embedding. Replaced with `models/gemini-embedding-001` (HTTP 200, **3072-dim**, up from 768) and made it configurable via `GEMINI_EMBEDDING_MODEL`. Verified end-to-end: index → retrieve returns the matching chunk.
+- [x] **Silent AI failures.** ↑ The 404 above went unnoticed for exactly this reason: `FallbackQuestionGenerator` / `FallbackEvaluator` swallow every exception with no logging (`app/services/ai/base.py:92`, `:104`), so a dead model, a bad key, and "the AI is just generic" all look identical from the outside. Log at WARNING with the provider error before falling back, and surface a degraded-mode signal (health check field or a response flag) so this can't hide again.
+  → **Done.** New `app/services/ai/degradation.py` records the four degradation points (`initial_questions`, `follow_up`, `evaluate`, `index_resume`) at WARNING with the exception attached, and `GET /health` now returns an `ai` block (`configured`, `fallbacks`, `last_operation`, `last_error`, `last_at`). Deliberately does **not** flip `status` — one historical 429 must not fail a liveness probe. Guarded by `tests/test_degradation.py`.
+- [x] **Gemini reports render an empty summary.** `report-view.tsx:53` reads `detailed_feedback.summary`, but only `HeuristicEvaluator` sets it (`evaluator.py:149`); `GeminiEvaluator` writes only `recommendations` + `per_question` (`evaluator.py:228`). Add `summary` to the Gemini prompt + parse.
+  → **Done.** Prompt asks for it, parser reads the usual key aliases, and a score-and-role line is synthesised if the model omits it. Verified against the live model.
 ---
 ## Phase 1 — Complete what's half-built (P1)
 Scaffolding exists; the feature does not.
@@ -53,14 +60,16 @@ Scaffolding exists; the feature does not.
 ### Security (P1)
 - [ ] **Rate limiting.** None anywhere — neither on auth endpoints nor on the Gemini-backed routes, where each request costs money and burns a 60 req/min free-tier quota.
 - [ ] **httpOnly cookie BFF for tokens.** Tokens currently live in JS-readable cookies (`api-client.ts:35`), flagged as MVP in the code itself.
-- [ ] **The Gemini API key is written to the logs in cleartext.** `GeminiClient` passes the key as a `?key=` query param, and httpx logs the full URL at INFO — so every AI call prints the key (seen in the backend container logs on 2026-07-27). Send it as the `x-goog-api-key` header instead, and/or set `logging.getLogger("httpx").setLevel(WARNING)`. Rotate the key that has already been logged.
+- [x] **The Gemini API key is written to the logs in cleartext.** `GeminiClient` passes the key as a `?key=` query param, and httpx logs the full URL at INFO — so every AI call prints the key (seen in the backend container logs on 2026-07-27). Send it as the `x-goog-api-key` header instead, and/or set `logging.getLogger("httpx").setLevel(WARNING)`. Rotate the key that has already been logged.
+  → **Done** in both `GeminiClient` and `EmbeddingService`; httpx/httpcore pinned to WARNING. Verified: at root DEBUG the key no longer appears in captured logs.
+  → ⚠️ **STILL OUTSTANDING: rotate the key in `.env`.** It has already been written to logs and must be replaced in Google AI Studio.
 - [ ] **CSP + security headers.**
 - [ ] **Per-user quotas** on interview creation / resume uploads.
 ### Observability (P2)
 - [ ] Metrics + tracing (request logging is all there is: `app/middleware/request_logging.py`).
 - [ ] Error reporting (Sentry or equivalent).
 - [ ] AI-call telemetry: latency, token spend, **fallback rate** — a non-zero fallback rate is the alert that would have caught the `gemini-1.5-flash` 404 on day one.
-- [ ] **Log level is too verbose.** Each AI call emits ~15 `httpcore` DEBUG lines (connect/TLS/request/response teardown) that bury the one line that matters. Pin third-party loggers (`httpcore`, `httpx`) to WARNING.
+- [x] **Log level is too verbose.** Each AI call emits ~15 `httpcore` DEBUG lines (connect/TLS/request/response teardown) that bury the one line that matters. Pin third-party loggers (`httpcore`, `httpx`) to WARNING. → **Done** in `app/core/logging.py`.
 ### Config hygiene (P2)
 - [ ] **Postgres port is inconsistent** across docker-compose (**5434**), `.env.example` (**5433**), and the code default (**5432**).
 - [ ] **No `backend/.env`.** `Settings` loads `.env` relative to CWD, so running uvicorn from `backend/` silently uses code defaults (no Gemini key) — surprising, and it looks identical to a broken API key.
@@ -97,4 +106,16 @@ server returning 500
 In all those cases, the UI ends up looking as if the user is logged out.
 A more informative approach would distinguish authentication failures (401/403) from transient network or server failures, allowing the UI to show "Unable to reach the server" instead of appearing to log the user out.
 ## Changes Made
-- [ ] **Changed Gemini_api_model** I changed gemini model to gemini-flash-latest and the test cases worked properly , I hanvn't checked for the application yet.
+- [x] **Changed Gemini_api_model** I changed gemini model to gemini-flash-latest and the test cases worked properly , I hanvn't checked for the application yet.
+  → Confirmed correct: `gemini-flash-latest` is present in `GET /v1beta/models` and `generate_json` returns 200 against the live API. Propagated to `.env.example` and `docker-compose.yml`, which still said `gemini-1.5-flash`.
+
+## Known lint debt (pre-existing, not introduced by Phase 0)
+Baseline as of 2026-08-08, unchanged by any Phase 0 commit:
+- `ruff check app` — **13 errors**: 11× `E402` (module-level import not at top of file) in `interview_service.py`, 2× `F401` (unused `typing.Any`) in `embedding.py` and `gemini.py`.
+- `mypy app` — **8 errors**, mostly chromadb stub mismatches in `vector_store.py` (`query_embeddings` typing, indexing an optional result).
+Worth clearing before CI lands, since CI should fail on these.
+
+## Suggested next step
+Phase 0 is closed. Per the ordering below, next is **follow-up resume context**
+(`interview_service.py:136` passes `resume_text=None`) — and it is now actually
+worth doing, because RAG retrieval returns real chunks for the first time.

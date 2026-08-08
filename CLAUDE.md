@@ -75,13 +75,17 @@ Everything is behind an ABC with a factory, and **every AI path degrades gracefu
 |---|---|---|
 | `QuestionGenerator` (`base.py`, factory `get_question_generator`) | `GeminiQuestionGenerator` (`gemini.py`), 5 tailored questions + adaptive follow-ups | `StaticQuestionGenerator`: 3 fixed questions, `follow_up()` → `None` |
 | `Evaluator` (`evaluator.py`, factory `get_evaluator`) | `GeminiEvaluator` | `HeuristicEvaluator`: score from answer coverage + avg word depth |
-| RAG (`deps.py::get_rag_service`) | `RAGService` = `EmbeddingService` (Gemini `embedding-001`) + `ChromaVectorStore` | returns `None`; generator falls back to `resume_text[:4000]` |
+| RAG (`deps.py::get_rag_service`) | `RAGService` = `EmbeddingService` (`GEMINI_EMBEDDING_MODEL`, default `models/gemini-embedding-001`, 3072-dim) + `ChromaVectorStore` | returns `None`; generator falls back to `resume_text[:4000]` |
+
+Google retires model IDs, and a retired ID is a 404 that the fallback layer hides — this has already happened twice here. Before changing `GEMINI_MODEL` or `GEMINI_EMBEDDING_MODEL`, check the ID against `GET https://generativelanguage.googleapis.com/v1beta/models` with the key in use.
+
+Degradations are recorded by `app/services/ai/degradation.py` and reported in the `ai` block of `GET /health` (`fallbacks`, `last_operation`, `last_error`). **Any new `except` that silently swaps in a fallback must call `record_fallback()`** — that counter is the only thing standing between a dead provider and a system that looks fine. A non-zero `fallbacks` count in a test environment means the AI path is broken, not that the fallback is working.
 
 `FallbackQuestionGenerator` / `FallbackEvaluator` wrap the primary and catch *any* exception. `GeminiClient` (`gemini_client.py`) is a hand-written httpx call to the REST API in JSON mode (no SDK); it raises `GeminiError` on bad shape/status. Model output is deliberately parsed leniently (`_first`, `_as_str_list` in `evaluator.py`) because field names vary between responses.
 
 Flow: `ResumeService.upload()` parses PDF/DOCX (`resume_parser.py`) → sets `Resume.parsed_text` + `status` → indexes chunks into ChromaDB (non-blocking; failure is logged, upload still succeeds). `InterviewService.create()` generates questions (RAG-retrieved resume context when available), `submit_answer()` may append a `follow_up` question linked by `parent_question_id`, `complete()` runs the evaluator and writes a `COMPLETED` `EvaluationReport`. `reevaluate()` regenerates a report for an already-completed session.
 
-ChromaDB persists to `/tmp/interviewpilot/chroma` (hardcoded in `deps.py::get_rag_service`).
+ChromaDB persists to `CHROMA_PATH` (default `/var/lib/interviewpilot/chroma`, backed by the `chroma_data` Docker volume). `get_rag_service()` is `@lru_cache`d, so tests that vary settings must call `get_rag_service.cache_clear()`. Outside Docker that default path is usually unwritable — RAG then logs a warning and disables itself, so set `CHROMA_PATH` to something local when running the backend directly.
 
 Deeper docs: `backend/AI_INTEGRATION.md`, `backend/RAG_IMPLEMENTATION.md`.
 
