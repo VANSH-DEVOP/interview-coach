@@ -3,7 +3,14 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.interview_session import SessionStatus
+from app.models.interview_session import (
+    DEFAULT_QUESTION_COUNT,
+    MAX_QUESTION_COUNT,
+    MIN_QUESTION_COUNT,
+    DifficultyLevel,
+    InterviewType,
+    SessionStatus,
+)
 from app.models.question import QuestionType
 
 
@@ -11,6 +18,15 @@ class InterviewCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     target_role: str | None = Field(default=None, max_length=255)
     resume_id: uuid.UUID | None = None
+    # Defaults reproduce the previous behaviour, so existing clients that omit
+    # these keep getting a 5-question mixed interview at mid level.
+    interview_type: InterviewType = InterviewType.MIXED
+    difficulty: DifficultyLevel = DifficultyLevel.MID
+    question_count: int = Field(
+        default=DEFAULT_QUESTION_COUNT,
+        ge=MIN_QUESTION_COUNT,
+        le=MAX_QUESTION_COUNT,
+    )
 
 
 class AnswerCreate(BaseModel):
@@ -47,6 +63,9 @@ class InterviewRead(BaseModel):
     target_role: str | None
     resume_id: uuid.UUID | None
     status: SessionStatus
+    interview_type: InterviewType
+    difficulty: DifficultyLevel
+    question_count: int
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime

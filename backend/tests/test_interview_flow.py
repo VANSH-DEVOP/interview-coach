@@ -13,10 +13,16 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
+from pydantic import ValidationError
 
 from app.models.answer import Answer
 from app.models.evaluation_report import EvaluationReport, ReportStatus
-from app.models.interview_session import InterviewSession, SessionStatus
+from app.models.interview_session import (
+    DifficultyLevel,
+    InterviewSession,
+    InterviewType,
+    SessionStatus,
+)
 from app.models.question import Question
 from app.schemas.interview import AnswerCreate, InterviewCreate
 from app.models.resume import Resume
@@ -170,6 +176,68 @@ def _service_with(generator: QuestionGenerator, resumes=None) -> InterviewServic
     )
 
 
+class _SpecRecordingGenerator(StaticQuestionGenerator):
+    def __init__(self) -> None:
+        self.specs: list = []
+
+    async def initial_questions(self, *, target_role, resume_text, resume_id=None, spec=None):
+        self.specs.append(spec)
+        return await super().initial_questions(
+            target_role=target_role,
+            resume_text=resume_text,
+            resume_id=resume_id,
+            spec=spec,
+        )
+
+
+async def test_create_persists_and_forwards_the_interview_configuration():
+    user_id = uuid.uuid4()
+    generator = _SpecRecordingGenerator()
+    svc = _service_with(generator)
+
+    session = await svc.create(
+        user_id,
+        InterviewCreate(
+            title="System design drill",
+            target_role="Staff Engineer",
+            interview_type=InterviewType.SYSTEM_DESIGN,
+            difficulty=DifficultyLevel.SENIOR,
+            question_count=8,
+        ),
+    )
+
+    # Persisted on the session...
+    assert session.interview_type is InterviewType.SYSTEM_DESIGN
+    assert session.difficulty is DifficultyLevel.SENIOR
+    assert session.question_count == 8
+
+    # ...and handed to the generator as plain strings.
+    spec = generator.specs[0]
+    assert spec.interview_type == "system_design"
+    assert spec.difficulty == "senior"
+    assert spec.question_count == 8
+
+    detail = await svc.get_detail(session.id, user_id)
+    assert len(detail.questions) == 8
+
+
+async def test_create_defaults_match_the_previous_behaviour():
+    user_id = uuid.uuid4()
+    svc = _service_with(StaticQuestionGenerator())
+
+    session = await svc.create(user_id, InterviewCreate(title="P"))
+
+    assert session.interview_type is InterviewType.MIXED
+    assert session.difficulty is DifficultyLevel.MID
+    assert session.question_count == 5
+
+
+@pytest.mark.parametrize("count", [2, 11])
+async def test_question_count_outside_the_allowed_range_is_rejected(count):
+    with pytest.raises(ValidationError):
+        InterviewCreate(title="P", question_count=count)
+
+
 async def test_follow_up_receives_the_sessions_resume_context():
     # Regression guard: submit_answer used to hardcode resume_text=None, so
     # follow-ups were generated blind to the candidate's resume.
@@ -216,7 +284,7 @@ async def test_follow_up_is_persisted_with_a_free_sequence_number():
 
     session = await svc.create(user_id, InterviewCreate(title="P", target_role="Backend"))
     detail = await svc.get_detail(session.id, user_id)
-    assert len(detail.questions) == 3
+    assert len(detail.questions) == 5
 
     await svc.submit_answer(
         session.id,
@@ -226,9 +294,9 @@ async def test_follow_up_is_persisted_with_a_free_sequence_number():
 
     after = await svc.get_detail(session.id, user_id)
     sequences = [q.sequence_number for q in after.questions]
-    assert len(after.questions) == 4
+    assert len(after.questions) == 6
     assert len(set(sequences)) == len(sequences), "sequence numbers must not collide"
-    assert sequences == [1, 2, 3, 4]
+    assert sequences == [1, 2, 3, 4, 5, 6]
 
     follow = after.questions[-1]
     assert follow.parent_question_id == detail.questions[0].id
@@ -262,7 +330,7 @@ async def test_full_interview_flow_produces_completed_report(service):
     )
     assert session.status is SessionStatus.IN_PROGRESS
     detail = await service.get_detail(session.id, user_id)
-    assert len(detail.questions) == 3
+    assert len(detail.questions) == 5
 
     # started_at must be a naive UTC datetime (regression guard).
     assert session.started_at is not None
@@ -294,7 +362,7 @@ async def test_full_interview_flow_produces_completed_report(service):
     assert report.overall_score > 0
     assert report.strengths  # non-empty
     assert "per_question" in report.detailed_feedback
-    assert len(report.detailed_feedback["per_question"]) == 3
+    assert len(report.detailed_feedback["per_question"]) == 5
 
 
 async def test_complete_twice_raises_conflict(service):

@@ -24,7 +24,7 @@ from app.repositories.interview_repository import InterviewRepository
 from app.repositories.report_repository import ReportRepository
 from app.repositories.resume_repository import ResumeRepository
 from app.schemas.interview import AnswerCreate, InterviewCreate
-from app.services.ai.base import QuestionGenerator
+from app.services.ai.base import InterviewSpec, QuestionGenerator
 from app.services.ai.evaluator import EvaluationResult, Evaluator, QAPair
 
 
@@ -85,6 +85,9 @@ class InterviewService:
             title=payload.title,
             target_role=payload.target_role,
             status=SessionStatus.IN_PROGRESS,
+            interview_type=payload.interview_type,
+            difficulty=payload.difficulty,
+            question_count=payload.question_count,
             started_at=_utcnow(),
         )
         session = await self.interviews.add(session)
@@ -93,6 +96,11 @@ class InterviewService:
             target_role=payload.target_role,
             resume_text=resume_text,
             resume_id=payload.resume_id,
+            spec=InterviewSpec(
+                interview_type=payload.interview_type.value,
+                difficulty=payload.difficulty.value,
+                question_count=payload.question_count,
+            ),
         )
         for index, item in enumerate(generated, start=1):
             self.interviews.session.add(

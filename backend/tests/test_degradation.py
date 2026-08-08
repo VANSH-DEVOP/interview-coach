@@ -32,7 +32,9 @@ def _clean_state():
 
 
 class _BrokenGenerator(QuestionGenerator):
-    async def initial_questions(self, *, target_role, resume_text, resume_id=None):
+    async def initial_questions(
+        self, *, target_role, resume_text, resume_id=None, spec=None
+    ):
         raise RuntimeError("HTTP 404: model retired")
 
     async def follow_up(self, *, question, answer, resume_text, resume_id=None):
@@ -59,7 +61,7 @@ async def test_initial_questions_fallback_is_recorded():
     questions = await generator.initial_questions(target_role="Backend", resume_text=None)
 
     # The safety net still works: the caller gets usable questions.
-    assert len(questions) == 3
+    assert len(questions) == 5
     assert all(isinstance(q, GeneratedQuestion) for q in questions)
 
     # ...but the degradation is no longer invisible.

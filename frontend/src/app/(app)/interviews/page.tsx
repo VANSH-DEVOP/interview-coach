@@ -6,7 +6,16 @@ import { useRouter } from "next/navigation";
 import { MessageSquare } from "lucide-react";
 
 import { api, ApiError } from "@/lib/api-client";
-import type { InterviewSession, Page, Resume } from "@/types";
+import {
+  DEFAULT_QUESTION_COUNT,
+  MAX_QUESTION_COUNT,
+  MIN_QUESTION_COUNT,
+  type DifficultyLevel,
+  type InterviewSession,
+  type InterviewType,
+  type Page,
+  type Resume,
+} from "@/types";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +24,24 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
+
+const INTERVIEW_TYPES: { value: InterviewType; label: string }[] = [
+  { value: "mixed", label: "Mixed (behavioral + technical)" },
+  { value: "behavioral", label: "Behavioral" },
+  { value: "technical", label: "Technical" },
+  { value: "system_design", label: "System design" },
+];
+
+const DIFFICULTIES: { value: DifficultyLevel; label: string }[] = [
+  { value: "junior", label: "Junior (0-2 years)" },
+  { value: "mid", label: "Mid (2-5 years)" },
+  { value: "senior", label: "Senior (5+ years)" },
+];
+
+const QUESTION_COUNTS = Array.from(
+  { length: MAX_QUESTION_COUNT - MIN_QUESTION_COUNT + 1 },
+  (_, i) => MIN_QUESTION_COUNT + i,
+);
 
 export default function InterviewsPage() {
   const router = useRouter();
@@ -49,6 +76,9 @@ export default function InterviewsPage() {
         title: String(form.get("title")),
         target_role: String(form.get("target_role")) || null,
         resume_id: resumeId || null,
+        interview_type: String(form.get("interview_type")) as InterviewType,
+        difficulty: String(form.get("difficulty")) as DifficultyLevel,
+        question_count: Number(form.get("question_count")),
       });
       router.push(`/interviews/${session.id}`);
     } catch (err) {
@@ -87,6 +117,44 @@ export default function InterviewsPage() {
                 <Label htmlFor="target_role">Target role (optional)</Label>
                 <Input id="target_role" name="target_role" placeholder="e.g. Senior Software Engineer" />
               </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="interview_type">Interview type</Label>
+                  <Select id="interview_type" name="interview_type" defaultValue="mixed">
+                    {INTERVIEW_TYPES.map((t) => (
+                      <option key={t.value} value={t.value}>
+                        {t.label}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="difficulty">Difficulty</Label>
+                  <Select id="difficulty" name="difficulty" defaultValue="mid">
+                    {DIFFICULTIES.map((d) => (
+                      <option key={d.value} value={d.value}>
+                        {d.label}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="question_count">Number of questions</Label>
+                <Select
+                  id="question_count"
+                  name="question_count"
+                  defaultValue={String(DEFAULT_QUESTION_COUNT)}
+                >
+                  {QUESTION_COUNTS.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+
               <div className="space-y-2">
                 <Label htmlFor="resume_id">Resume (optional)</Label>
                 <Select id="resume_id" name="resume_id" defaultValue="">
@@ -143,7 +211,11 @@ export default function InterviewsPage() {
                     {session.status.replace("_", " ")}
                   </Badge>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-1">
+                  <p className="text-xs text-muted-foreground">
+                    {session.interview_type.replace("_", " ")} · {session.difficulty} ·{" "}
+                    {session.question_count} questions
+                  </p>
                   <p className="text-xs text-muted-foreground">
                     Created {new Date(session.created_at).toLocaleString()}
                   </p>

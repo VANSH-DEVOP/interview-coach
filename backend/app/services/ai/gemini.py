@@ -11,7 +11,7 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from app.services.ai.base import GeneratedQuestion, QuestionGenerator
+from app.services.ai.base import GeneratedQuestion, InterviewSpec, QuestionGenerator
 from app.services.ai.gemini_client import GeminiClient
 
 if TYPE_CHECKING:
@@ -20,6 +20,37 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _VALID_TYPES = {"behavioral", "technical", "follow_up"}
+
+# What each interview type asks the model for. System-design questions are
+# stored as "technical": the question_type enum is a storage concern with its
+# own Postgres type, and widening it is not needed to shape the interview.
+_TYPE_INSTRUCTIONS = {
+    "behavioral": (
+        "Ask only behavioral questions about past experience, collaboration, "
+        "conflict, and ownership. Set question_type to \"behavioral\"."
+    ),
+    "technical": (
+        "Ask only hands-on technical questions about languages, frameworks, "
+        "debugging, and code-level trade-offs. Set question_type to \"technical\"."
+    ),
+    "system_design": (
+        "Ask only system design questions about architecture, scaling, data "
+        "modelling, and trade-offs at scale. Set question_type to \"technical\"."
+    ),
+    "mixed": "Mix behavioral and technical questions.",
+}
+
+_DIFFICULTY_INSTRUCTIONS = {
+    "junior": (
+        "Target a junior engineer (0-2 years): fundamentals, guided scope, "
+        "and questions answerable without deep production experience."
+    ),
+    "mid": "Target a mid-level engineer (2-5 years) with production experience.",
+    "senior": (
+        "Target a senior engineer (5+ years): ambiguity, trade-offs, technical "
+        "leadership, and decisions with lasting consequences."
+    ),
+}
 
 _SYSTEM = (
     "You are an expert technical interviewer. You generate concise, high-signal "
@@ -81,8 +112,10 @@ class GeminiQuestionGenerator(QuestionGenerator):
         target_role: str | None,
         resume_text: str | None,
         resume_id: uuid.UUID | None = None,
+        spec: InterviewSpec | None = None,
     ) -> list[GeneratedQuestion]:
         role = target_role or "a general software engineering role"
+        spec = spec or InterviewSpec()
 
         resume_context, used_rag = await self._resume_context(
             resume_text=resume_text,
@@ -90,9 +123,18 @@ class GeminiQuestionGenerator(QuestionGenerator):
             query=f"skills and experience relevant to {role}",
         )
 
+        type_instruction = _TYPE_INSTRUCTIONS.get(
+            spec.interview_type, _TYPE_INSTRUCTIONS["mixed"]
+        )
+        difficulty_instruction = _DIFFICULTY_INSTRUCTIONS.get(
+            spec.difficulty, _DIFFICULTY_INSTRUCTIONS["mid"]
+        )
+
         prompt = (
-            f"Generate exactly 5 mock interview questions for {role}. "
-            "Mix behavioral and technical questions. "
+            f"Generate exactly {spec.question_count} mock interview questions "
+            f"for {role}. "
+            f"{type_instruction} "
+            f"{difficulty_instruction} "
             'Respond as JSON: {"questions": [{"content": str, "question_type": '
             '"behavioral"|"technical"}]}.'
             f"{resume_context}"
@@ -121,6 +163,17 @@ class GeminiQuestionGenerator(QuestionGenerator):
             from app.services.ai.gemini_client import GeminiError
 
             raise GeminiError("Gemini returned no usable questions.")
+
+        # "exactly N" is a request, not a guarantee. Trim overruns so the user
+        # gets the length they chose; a short reply is left as-is rather than
+        # discarded, since fewer good questions beats falling back to static.
+        if len(questions) > spec.question_count:
+            logger.info(
+                "Gemini returned %d questions for a %d-question interview; trimming.",
+                len(questions),
+                spec.question_count,
+            )
+            questions = questions[: spec.question_count]
         return questions
 
     async def follow_up(

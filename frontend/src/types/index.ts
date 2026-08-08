@@ -27,6 +27,12 @@ export interface Resume {
 
 export type SessionStatus = "created" | "in_progress" | "completed" | "abandoned";
 export type QuestionType = "behavioral" | "technical" | "follow_up";
+export type InterviewType = "behavioral" | "technical" | "system_design" | "mixed";
+export type DifficultyLevel = "junior" | "mid" | "senior";
+
+export const MIN_QUESTION_COUNT = 3;
+export const MAX_QUESTION_COUNT = 10;
+export const DEFAULT_QUESTION_COUNT = 5;
 
 export interface Answer {
   id: string;
@@ -50,6 +56,9 @@ export interface InterviewSession {
   target_role: string | null;
   resume_id: string | null;
   status: SessionStatus;
+  interview_type: InterviewType;
+  difficulty: DifficultyLevel;
+  question_count: number;
   started_at: string | null;
   completed_at: string | null;
   created_at: string;

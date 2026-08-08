@@ -12,6 +12,7 @@ import pytest
 from app.services.ai.base import (
     FallbackQuestionGenerator,
     GeneratedQuestion,
+    InterviewSpec,
     QuestionGenerator,
     StaticQuestionGenerator,
 )
@@ -56,8 +57,22 @@ async def test_static_returns_default_questions():
     questions = await StaticQuestionGenerator().initial_questions(
         target_role="Backend", resume_text=None
     )
-    assert len(questions) == 3
+    # No spec -> the default 5-question interview.
+    assert len(questions) == 5
     assert all(q.metadata["source"] == "static" for q in questions)
+    # Distinct: a fallback that repeats itself reads as broken.
+    assert len({q.content for q in questions}) == len(questions)
+
+
+async def test_static_honours_the_requested_question_count():
+    for count in (3, 5, 10):
+        questions = await StaticQuestionGenerator().initial_questions(
+            target_role="Backend",
+            resume_text=None,
+            spec=InterviewSpec(question_count=count),
+        )
+        assert len(questions) == count
+        assert len({q.content for q in questions}) == count
 
 
 async def test_static_follow_up_is_none():
@@ -181,6 +196,47 @@ async def test_gemini_falls_back_to_raw_resume_when_retrieval_errors():
     assert questions[0].metadata["uses_rag"] is False
 
 
+async def test_gemini_prompt_reflects_the_interview_spec():
+    client = _FakeClient(payload={"questions": [{"content": "Q", "question_type": "technical"}]})
+    await GeminiQuestionGenerator(client).initial_questions(
+        target_role="Backend",
+        resume_text=None,
+        spec=InterviewSpec(
+            interview_type="system_design", difficulty="senior", question_count=7
+        ),
+    )
+    prompt = client.prompts[0]
+    assert "exactly 7" in prompt
+    assert "system design" in prompt.lower()
+    assert "senior" in prompt.lower()
+
+
+async def test_gemini_trims_overlong_question_lists_to_the_requested_count():
+    # "exactly N" is a request, not a guarantee.
+    client = _FakeClient(
+        payload={
+            "questions": [
+                {"content": f"Q{i}", "question_type": "technical"} for i in range(9)
+            ]
+        }
+    )
+    questions = await GeminiQuestionGenerator(client).initial_questions(
+        target_role="Backend", resume_text=None, spec=InterviewSpec(question_count=4)
+    )
+    assert [q.content for q in questions] == ["Q0", "Q1", "Q2", "Q3"]
+
+
+async def test_gemini_keeps_a_short_question_list_rather_than_failing():
+    # Fewer good questions beats discarding them and falling back to static.
+    client = _FakeClient(
+        payload={"questions": [{"content": "Q0", "question_type": "technical"}]}
+    )
+    questions = await GeminiQuestionGenerator(client).initial_questions(
+        target_role="Backend", resume_text=None, spec=InterviewSpec(question_count=5)
+    )
+    assert len(questions) == 1
+
+
 # -- FallbackQuestionGenerator ------------------------------------------------
 
 
@@ -190,8 +246,8 @@ async def test_fallback_initial_recovers_on_primary_failure():
         GeminiQuestionGenerator(bad_client), StaticQuestionGenerator()
     )
     questions = await generator.initial_questions(target_role="Role", resume_text=None)
-    # Falls back to the 3 static defaults.
-    assert len(questions) == 3
+    # Falls back to the static defaults.
+    assert len(questions) == 5
     assert all(q.metadata["source"] == "static" for q in questions)
 
 
