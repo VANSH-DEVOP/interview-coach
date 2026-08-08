@@ -110,6 +110,45 @@ async def test_gemini_evaluator_parses_payload():
     assert client.calls == 1
 
 
+async def test_gemini_evaluator_emits_summary():
+    # report-view.tsx renders detailed_feedback.summary as the headline; the
+    # Gemini path used to omit the key entirely, leaving the panel blank.
+    client = _FakeClient(
+        payload={
+            "overall_score": 7.5,
+            "summary": "A solid interview with room for more concrete detail.",
+            "strengths": ["Clear communication"],
+            "weaknesses": ["Lacked metrics"],
+        }
+    )
+    result = await GeminiEvaluator(client).evaluate(
+        target_role="Backend", transcript=[QAPair(question="Q1", answer="A1")]
+    )
+    assert (
+        result.detailed_feedback["summary"]
+        == "A solid interview with room for more concrete detail."
+    )
+
+
+async def test_gemini_evaluator_reads_summary_key_aliases():
+    client = _FakeClient(payload={"overall_score": 6, "overall_feedback": "Decent showing."})
+    result = await GeminiEvaluator(client).evaluate(
+        target_role="Backend", transcript=[QAPair(question="Q1", answer="A1")]
+    )
+    assert result.detailed_feedback["summary"] == "Decent showing."
+
+
+async def test_gemini_evaluator_synthesises_missing_summary():
+    # A model that omits summary must not produce an empty headline.
+    client = _FakeClient(payload={"overall_score": 6, "strengths": ["Good energy"]})
+    result = await GeminiEvaluator(client).evaluate(
+        target_role="Backend", transcript=[QAPair(question="Q1", answer="A1")]
+    )
+    summary = result.detailed_feedback["summary"]
+    assert summary
+    assert "6" in summary and "Backend" in summary
+
+
 async def test_gemini_evaluator_clamps_score_to_range():
     client = _FakeClient(payload={"overall_score": 42})
     result = await GeminiEvaluator(client).evaluate(target_role=None, transcript=[])

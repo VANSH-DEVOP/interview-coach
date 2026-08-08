@@ -176,9 +176,11 @@ class GeminiEvaluator(Evaluator):
         prompt = (
             f"Evaluate this mock interview for {target_role or 'a software role'}. "
             "Score 0-10. Respond as JSON: "
-            '{"overall_score": number, "strengths": [str], "weaknesses": [str], '
-            '"recommendations": [str], "per_question": '
-            '[{"question": str, "feedback": str}]}.'
+            '{"overall_score": number, "summary": str, "strengths": [str], '
+            '"weaknesses": [str], "recommendations": [str], "per_question": '
+            '[{"question": str, "feedback": str}]}. '
+            '"summary" is a 2-3 sentence overall assessment of the candidate\'s '
+            "performance, written directly to the candidate."
             "\n\nTranscript:\n" + "\n\n".join(lines)
         )
         payload = await self._client.generate_json(
@@ -215,6 +217,19 @@ class GeminiEvaluator(Evaluator):
             _first(payload, ["recommendations", "suggestions", "advice"], [])
         )
 
+        # The report UI renders detailed_feedback.summary as the headline. Model
+        # key naming varies, and a model that omits it entirely would leave the
+        # panel blank, so fall back to a synthesised line rather than nothing.
+        summary = str(
+            _first(payload, ["summary", "overall_feedback", "overall", "assessment"], "")
+        ).strip()
+        if not summary:
+            summary = (
+                f"Scored {score} out of 10 across {len(transcript)} "
+                f"question{'s' if len(transcript) != 1 else ''} for "
+                f"{target_role or 'the target role'}."
+            )
+
         # A non-perfect score with no stated weaknesses is contradictory. Surface
         # the recommendations as improvement areas so the user always gets
         # actionable feedback when they didn't score a perfect 10.
@@ -228,6 +243,7 @@ class GeminiEvaluator(Evaluator):
             strengths=strengths,
             weaknesses=weaknesses,
             detailed_feedback={
+                "summary": summary,
                 "recommendations": recommendations,
                 "per_question": payload.get("per_question", []),
             },
