@@ -5,13 +5,17 @@ the whole deployment -- without them one user drains the shared quota and
 every other user silently receives deterministic fallback output.
 """
 
+import uuid
+from datetime import datetime
+
 import pytest
 
-from app.api.deps import get_auth_service
+from app.api.deps import get_auth_service, get_current_user, get_interview_service
 from app.core import rate_limit
 from app.core.config import get_settings
 from app.core.exceptions import RateLimitedError, UnauthorizedError
 from app.main import app
+from app.models.interview_session import InterviewSession, SessionStatus
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +43,49 @@ def stub_auth():
     app.dependency_overrides[get_auth_service] = lambda: _RejectingAuthService()
     yield
     app.dependency_overrides.pop(get_auth_service, None)
+
+
+class _FakeUser:
+    def __init__(self) -> None:
+        self.id = uuid.uuid4()
+        self.is_active = True
+
+
+class _StubInterviewService:
+    """Returns a valid session without a database or an AI provider."""
+
+    async def create(self, user_id, payload):
+        return InterviewSession(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            resume_id=None,
+            title=payload.title,
+            target_role=payload.target_role,
+            status=SessionStatus.IN_PROGRESS,
+            interview_type=payload.interview_type,
+            difficulty=payload.difficulty,
+            question_count=payload.question_count,
+            started_at=datetime(2026, 1, 1),
+            completed_at=None,
+            created_at=datetime(2026, 1, 1),
+        )
+
+
+@pytest.fixture
+def stub_user():
+    # One user for the whole test: a fresh one per request would land in a
+    # different bucket and never hit the limit.
+    user = _FakeUser()
+    app.dependency_overrides[get_current_user] = lambda: user
+    yield user
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.fixture
+def stub_interviews():
+    app.dependency_overrides[get_interview_service] = lambda: _StubInterviewService()
+    yield
+    app.dependency_overrides.pop(get_interview_service, None)
 
 
 # -- _Window ------------------------------------------------------------------
@@ -93,11 +140,11 @@ def test_enforce_raises_with_a_retry_after_header(monkeypatch):
     monkeypatch.setattr(settings, "RATE_LIMIT_AUTH_ATTEMPTS", 2, raising=False)
     monkeypatch.setattr(settings, "RATE_LIMIT_AUTH_WINDOW_SECONDS", 60, raising=False)
 
-    rate_limit._enforce("1.2.3.4", scope="auth")
-    rate_limit._enforce("1.2.3.4", scope="auth")
+    rate_limit.enforce("1.2.3.4", scope="auth")
+    rate_limit.enforce("1.2.3.4", scope="auth")
 
     with pytest.raises(RateLimitedError) as excinfo:
-        rate_limit._enforce("1.2.3.4", scope="auth")
+        rate_limit.enforce("1.2.3.4", scope="auth")
 
     exc = excinfo.value
     assert exc.status_code == 429
@@ -111,7 +158,7 @@ def test_enforce_is_a_no_op_when_disabled(monkeypatch):
     monkeypatch.setattr(settings, "RATE_LIMIT_AUTH_ATTEMPTS", 1, raising=False)
 
     for _ in range(50):
-        rate_limit._enforce("1.2.3.4", scope="auth")
+        rate_limit.enforce("1.2.3.4", scope="auth")
 
 
 # -- HTTP ---------------------------------------------------------------------
@@ -157,12 +204,12 @@ def test_scopes_are_independent(monkeypatch):
     monkeypatch.setattr(settings, "RATE_LIMIT_AUTH_ATTEMPTS", 1, raising=False)
     monkeypatch.setattr(settings, "RATE_LIMIT_AI_REQUESTS", 5, raising=False)
 
-    rate_limit._enforce("same-key", scope="auth")
+    rate_limit.enforce("same-key", scope="auth")
     with pytest.raises(RateLimitedError):
-        rate_limit._enforce("same-key", scope="auth")
+        rate_limit.enforce("same-key", scope="auth")
 
     # Exhausting auth must not consume the AI budget, even for the same key.
-    rate_limit._enforce("same-key", scope="ai")
+    rate_limit.enforce("same-key", scope="ai")
 
 
 async def test_ai_routes_reject_unauthenticated_before_consuming_a_slot(client):
@@ -170,3 +217,47 @@ async def test_ai_routes_reject_unauthenticated_before_consuming_a_slot(client):
     # 401 and cannot burn another user's quota or fill the table.
     response = await client.post("/api/v1/interviews", json={"title": "x"})
     assert response.status_code == 401
+
+
+async def test_authenticated_ai_route_passes_the_limiter_and_then_429s(
+    client, stub_user, stub_interviews, monkeypatch
+):
+    """Regression guard for a limiter that broke the route it protected.
+
+    limit_by_user originally lived in app/core/rate_limit.py, which has
+    `from __future__ import annotations`. Its inner dependency imported User
+    locally, so FastAPI could not resolve `Annotated[User, Depends(...)]`,
+    silently reinterpreted `user` as a *query parameter*, and every AI-backed
+    route answered 422 "Field required: query.user".
+
+    The 401 test above passed throughout, because auth failed before the
+    broken annotation mattered. Only an authenticated request catches it.
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings, "RATE_LIMIT_AI_REQUESTS", 2, raising=False)
+
+    body = {"title": "Practice"}
+    for _ in range(2):
+        response = await client.post("/api/v1/interviews", json=body)
+        assert response.status_code == 201, response.text
+
+    limited = await client.post("/api/v1/interviews", json=body)
+    assert limited.status_code == 429
+    assert limited.json()["error"]["code"] == "rate_limited"
+
+
+async def test_ai_budget_is_per_user(client, stub_interviews, monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "RATE_LIMIT_AI_REQUESTS", 1, raising=False)
+
+    first, second = _FakeUser(), _FakeUser()
+
+    app.dependency_overrides[get_current_user] = lambda: first
+    assert (await client.post("/api/v1/interviews", json={"title": "a"})).status_code == 201
+    assert (await client.post("/api/v1/interviews", json={"title": "a"})).status_code == 429
+
+    # A different user still has their full budget.
+    app.dependency_overrides[get_current_user] = lambda: second
+    assert (await client.post("/api/v1/interviews", json={"title": "a"})).status_code == 201
+
+    app.dependency_overrides.pop(get_current_user, None)

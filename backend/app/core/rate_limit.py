@@ -27,9 +27,8 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Annotated, Callable
 
-from fastapi import Depends, Request
+from fastapi import Request
 
 from app.core.config import get_settings
 from app.core.exceptions import RateLimitedError
@@ -87,7 +86,7 @@ def reset() -> None:
     _window.reset()
 
 
-def _client_ip(request: Request) -> str:
+def client_ip(request: Request) -> str:
     """Best-effort client address.
 
     X-Forwarded-For is trusted only because this app is expected to sit behind
@@ -110,7 +109,7 @@ _LIMITS: dict[str, tuple[str, str]] = {
 }
 
 
-def _enforce(key: str, *, scope: str) -> None:
+def enforce(key: str, *, scope: str) -> None:
     settings = get_settings()
     if not settings.RATE_LIMIT_ENABLED:
         return
@@ -134,29 +133,6 @@ def _enforce(key: str, *, scope: str) -> None:
     )
 
 
-def limit_by_ip(scope: str) -> Callable:
-    """Dependency limiting by client IP. For endpoints with no user yet."""
-
-    async def dependency(request: Request) -> None:
-        _enforce(_client_ip(request), scope=scope)
-
-    return dependency
-
-
-def limit_by_user(scope: str) -> Callable:
-    """Dependency limiting by authenticated user id.
-
-    Resolving the current user here is free: FastAPI caches dependencies per
-    request, so the route's own CurrentUser resolves the same object. It also
-    means an unauthenticated request is rejected with 401 before it can
-    consume a rate-limit slot.
-    """
-    # Imported lazily: app.api.deps imports plenty from app.core, and a
-    # top-level import here would close the cycle.
-    from app.api.deps import get_current_user
-    from app.models.user import User
-
-    async def dependency(user: Annotated[User, Depends(get_current_user)]) -> None:
-        _enforce(str(user.id), scope=scope)
-
-    return dependency
+# The FastAPI dependencies that call enforce() live in app/api/deps.py, with
+# the rest of the DI wiring. This module stays a pure mechanism: no knowledge
+# of routes, users, or authentication.

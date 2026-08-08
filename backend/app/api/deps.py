@@ -10,10 +10,11 @@ from functools import lru_cache
 from typing import Annotated
 
 import jwt as pyjwt
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import rate_limit
 from app.core.exceptions import UnauthorizedError
 from app.core.security import decode_token
 from app.core.config import get_settings
@@ -146,3 +147,33 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+# -- Rate limiting ---------------------------------------------------------------
+# The mechanism lives in app/core/rate_limit.py; the wiring lives here, like all
+# other DI. Note the absence of `from __future__ import annotations` in this
+# module: these signatures must stay resolvable at runtime, or FastAPI cannot
+# see the Depends marker and silently reinterprets the parameter as a query
+# field (which is exactly what happened when this lived in app/core).
+def limit_by_ip(scope: str):
+    """Rate limit by client IP. For endpoints with no authenticated user."""
+
+    async def dependency(request: Request) -> None:
+        rate_limit.enforce(rate_limit.client_ip(request), scope=scope)
+
+    return dependency
+
+
+def limit_by_user(scope: str):
+    """Rate limit by authenticated user id.
+
+    Depending on get_current_user costs nothing extra -- FastAPI caches
+    dependencies per request, so the route's own CurrentUser resolves the same
+    object. It also means an unauthenticated caller is rejected with 401 before
+    consuming anyone's budget.
+    """
+
+    async def dependency(user: CurrentUser) -> None:
+        rate_limit.enforce(str(user.id), scope=scope)
+
+    return dependency

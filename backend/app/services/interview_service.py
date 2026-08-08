@@ -177,6 +177,38 @@ class InterviewService:
 
         return answer
 
+    async def abandon(self, session_id: uuid.UUID, user_id: uuid.UUID) -> InterviewSession:
+        """Give up on an in-progress session without evaluating it.
+
+        Distinct from delete: the transcript is kept, so a half-finished
+        interview stays visible in history rather than vanishing. No report is
+        produced, because an abandoned session has nothing worth scoring.
+        """
+        session = await self.interviews.get_owned(session_id, user_id)
+        if session is None:
+            raise NotFoundError("Interview session not found.")
+        if session.status is SessionStatus.COMPLETED:
+            raise ConflictError("A completed interview session cannot be abandoned.")
+        if session.status is SessionStatus.ABANDONED:
+            raise ConflictError("This interview session is already abandoned.")
+
+        session.status = SessionStatus.ABANDONED
+        session.completed_at = _utcnow()
+        await self.interviews.session.flush()
+        return session
+
+    async def delete(self, session_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        """Permanently remove a session.
+
+        Questions, answers, and the evaluation report go with it via the
+        cascade on the relationships. Allowed in any status: this is the user
+        deleting their own data, not a state transition.
+        """
+        session = await self.interviews.get_owned(session_id, user_id)
+        if session is None:
+            raise NotFoundError("Interview session not found.")
+        await self.interviews.delete(session)
+
     async def complete(self, session_id: uuid.UUID, user_id: uuid.UUID) -> InterviewSession:
         session = await self.interviews.get_owned(session_id, user_id, with_questions=True)
         if session is None:

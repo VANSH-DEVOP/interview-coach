@@ -1,10 +1,9 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
-from app.api.deps import CurrentUser, get_interview_service
-from app.core.rate_limit import limit_by_user
+from app.api.deps import CurrentUser, get_interview_service, limit_by_user
 from app.models.interview_session import SessionStatus
 from app.schemas.common import Page, PageParams
 from app.schemas.interview import (
@@ -78,6 +77,24 @@ async def submit_answer(
 ) -> AnswerRead:
     answer = await interviews.submit_answer(session_id, current_user.id, payload)
     return AnswerRead.model_validate(answer)
+
+
+@router.post("/{session_id}/abandon", response_model=InterviewRead)
+async def abandon_interview(
+    session_id: uuid.UUID, current_user: CurrentUser, interviews: InterviewSvc
+) -> InterviewRead:
+    """Stop an interview without evaluating it. Keeps the transcript."""
+    session = await interviews.abandon(session_id, current_user.id)
+    return InterviewRead.model_validate(session)
+
+
+@router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_interview(
+    session_id: uuid.UUID, current_user: CurrentUser, interviews: InterviewSvc
+) -> Response:
+    """Permanently delete a session, its transcript, and its report."""
+    await interviews.delete(session_id, current_user.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(

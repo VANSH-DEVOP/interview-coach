@@ -2,8 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 
-from app.api.deps import get_auth_service
-from app.core.rate_limit import limit_by_ip
+from app.api.deps import get_auth_service, limit_by_ip
 from app.schemas.auth import LoginRequest, RefreshRequest, TokenPair
 from app.schemas.user import UserCreate, UserRead
 from app.services.auth_service import AuthService

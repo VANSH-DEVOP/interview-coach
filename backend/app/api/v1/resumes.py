@@ -3,8 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response, UploadFile, status
 
-from app.api.deps import CurrentUser, get_resume_service
-from app.core.rate_limit import limit_by_user
+from app.api.deps import CurrentUser, get_resume_service, limit_by_user
 from app.schemas.common import Page, PageParams
 from app.schemas.resume import ResumeRead
 from app.services.resume_service import ResumeService

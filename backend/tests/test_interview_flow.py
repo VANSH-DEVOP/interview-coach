@@ -13,8 +13,9 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
-from pydantic import ValidationError
+from pydantic import ValidationError as PydanticValidationError
 
+from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.models.answer import Answer
 from app.models.evaluation_report import EvaluationReport, ReportStatus
 from app.models.interview_session import (
@@ -98,6 +99,17 @@ class _FakeInterviewRepository:
         # so a fake that always populates would hide that bug.
         session.questions = self._questions_for(session_id) if with_questions else []
         return session
+
+    async def delete(self, entity):
+        self._sessions.pop(entity.id, None)
+        # Mirrors the ORM/FK cascade: children go with the parent.
+        for qid in [
+            q.id for q in self.session.questions.values() if q.session_id == entity.id
+        ]:
+            del self.session.questions[qid]
+        self.session.reports = [
+            r for r in self.session.reports if r.session_id != entity.id
+        ]
 
     async def next_sequence_number(self, session_id):
         existing = self._questions_for(session_id)
@@ -234,7 +246,7 @@ async def test_create_defaults_match_the_previous_behaviour():
 
 @pytest.mark.parametrize("count", [2, 11])
 async def test_question_count_outside_the_allowed_range_is_rejected(count):
-    with pytest.raises(ValidationError):
+    with pytest.raises(PydanticValidationError):
         InterviewCreate(title="P", question_count=count)
 
 
@@ -318,6 +330,132 @@ async def test_follow_up_without_a_resume_passes_none():
     call = generator.follow_up_calls[0]
     assert call["resume_text"] is None
     assert call["resume_id"] is None
+
+
+# -- abandon / delete ---------------------------------------------------------
+
+
+async def test_abandon_marks_the_session_and_keeps_the_transcript(service):
+    user_id = uuid.uuid4()
+    session = await service.create(user_id, InterviewCreate(title="P"))
+    detail = await service.get_detail(session.id, user_id)
+    await service.submit_answer(
+        session.id,
+        user_id,
+        AnswerCreate(question_id=detail.questions[0].id, content="An answer."),
+    )
+
+    abandoned = await service.abandon(session.id, user_id)
+
+    assert abandoned.status is SessionStatus.ABANDONED
+    assert abandoned.completed_at is not None
+    # Naive UTC, like every other timestamp here.
+    assert abandoned.completed_at.tzinfo is None
+    # The transcript survives -- abandon is not delete.
+    after = await service.get_detail(session.id, user_id)
+    assert len(after.questions) == 5
+    assert after.questions[0].answer is not None
+
+
+async def test_abandoned_session_produces_no_report(service):
+    user_id = uuid.uuid4()
+    session = await service.create(user_id, InterviewCreate(title="P"))
+
+    await service.abandon(session.id, user_id)
+
+    assert service.reports.session.reports == []
+
+
+async def test_abandoned_session_rejects_further_answers(service):
+    user_id = uuid.uuid4()
+    session = await service.create(user_id, InterviewCreate(title="P"))
+    detail = await service.get_detail(session.id, user_id)
+    question_id = detail.questions[0].id
+    await service.abandon(session.id, user_id)
+
+    with pytest.raises(ConflictError):
+        await service.submit_answer(
+            session.id,
+            user_id,
+            AnswerCreate(question_id=question_id, content="Too late."),
+        )
+
+
+async def test_abandoned_session_cannot_be_completed(service):
+    user_id = uuid.uuid4()
+    session = await service.create(user_id, InterviewCreate(title="P"))
+    await service.abandon(session.id, user_id)
+
+    with pytest.raises(ValidationError):
+        await service.complete(session.id, user_id)
+
+
+async def test_completed_session_cannot_be_abandoned(service):
+    user_id = uuid.uuid4()
+    session = await service.create(user_id, InterviewCreate(title="P"))
+    await service.complete(session.id, user_id)
+
+    with pytest.raises(ConflictError):
+        await service.abandon(session.id, user_id)
+
+
+async def test_abandon_twice_raises_conflict(service):
+    user_id = uuid.uuid4()
+    session = await service.create(user_id, InterviewCreate(title="P"))
+    await service.abandon(session.id, user_id)
+
+    with pytest.raises(ConflictError):
+        await service.abandon(session.id, user_id)
+
+
+async def test_abandon_unknown_session_raises_not_found(service):
+    with pytest.raises(NotFoundError):
+        await service.abandon(uuid.uuid4(), uuid.uuid4())
+
+
+async def test_delete_removes_the_session_and_its_children(service):
+    user_id = uuid.uuid4()
+    session = await service.create(user_id, InterviewCreate(title="P"))
+    detail = await service.get_detail(session.id, user_id)
+    await service.submit_answer(
+        session.id,
+        user_id,
+        AnswerCreate(question_id=detail.questions[0].id, content="An answer."),
+    )
+    await service.complete(session.id, user_id)
+
+    await service.delete(session.id, user_id)
+
+    with pytest.raises(NotFoundError):
+        await service.get_detail(session.id, user_id)
+    assert service.interviews.session.questions == {}
+    assert service.interviews.session.reports == []
+
+
+async def test_delete_is_allowed_in_any_status(service):
+    user_id = uuid.uuid4()
+    for prepare in (None, "abandon", "complete"):
+        session = await service.create(user_id, InterviewCreate(title="P"))
+        if prepare == "abandon":
+            await service.abandon(session.id, user_id)
+        elif prepare == "complete":
+            await service.complete(session.id, user_id)
+
+        await service.delete(session.id, user_id)
+        with pytest.raises(NotFoundError):
+            await service.get_detail(session.id, user_id)
+
+
+async def test_delete_another_users_session_raises_not_found(service):
+    owner = uuid.uuid4()
+    session = await service.create(owner, InterviewCreate(title="P"))
+
+    # Ownership is enforced in the repository read, so a stranger sees a 404
+    # rather than a 403 -- no information about whether the id exists.
+    with pytest.raises(NotFoundError):
+        await service.delete(session.id, uuid.uuid4())
+
+    assert await service.get_detail(session.id, owner) is not None
 
 
 async def test_full_interview_flow_produces_completed_report(service):

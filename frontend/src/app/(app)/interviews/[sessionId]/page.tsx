@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { CheckCircle2, ChevronRight } from "lucide-react";
+import { CheckCircle2, ChevronRight, Trash2 } from "lucide-react";
 
 import { api, ApiError } from "@/lib/api-client";
 import type { Answer, InterviewSessionDetail, Question } from "@/types";
@@ -24,6 +24,11 @@ export default function InterviewSessionPage() {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCompleting, setIsCompleting] = useState(false);
+  const [isAbandoning, setIsAbandoning] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  // Two-step confirmation: deleting takes the transcript and report with it,
+  // and there is no undo.
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const load = useCallback(async () => {
     const data = await api.get<InterviewSessionDetail>(`/interviews/${sessionId}`);
@@ -44,6 +49,8 @@ export default function InterviewSessionPage() {
     [questions]
   );
   const isCompleted = session?.status === "completed";
+  const isAbandoned = session?.status === "abandoned";
+  const isInProgress = session?.status === "in_progress";
 
   async function handleSubmitAnswer() {
     if (!activeQuestion || !draft.trim()) return;
@@ -92,6 +99,31 @@ export default function InterviewSessionPage() {
     }
   }
 
+  async function handleAbandon() {
+    setError(null);
+    setIsAbandoning(true);
+    try {
+      await api.post(`/interviews/${sessionId}/abandon`);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Unable to abandon the interview.");
+    } finally {
+      setIsAbandoning(false);
+    }
+  }
+
+  async function handleDelete() {
+    setError(null);
+    setIsDeleting(true);
+    try {
+      await api.delete(`/interviews/${sessionId}`);
+      router.push("/interviews");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Unable to delete the interview.");
+      setIsDeleting(false);
+    }
+  }
+
   if (!session) {
     return <p className="text-sm text-muted-foreground">Loading session…</p>;
   }
@@ -127,7 +159,7 @@ export default function InterviewSessionPage() {
             </Link>
           </CardContent>
         </Card>
-      ) : activeQuestion ? (
+      ) : isInProgress && activeQuestion ? (
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -184,9 +216,57 @@ export default function InterviewSessionPage() {
             </div>
           </CardContent>
         </Card>
-      ) : (
+      ) : isInProgress ? (
         <p className="text-sm text-muted-foreground">No questions were generated.</p>
+      ) : null}
+
+      {isAbandoned && (
+        <Card>
+          <CardContent className="py-6 text-center">
+            <p className="text-sm text-muted-foreground">
+              This interview was abandoned. The transcript is kept for reference, but no
+              evaluation report was generated.
+            </p>
+          </CardContent>
+        </Card>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Manage this session</CardTitle>
+          <CardDescription>
+            Abandoning stops the interview but keeps the transcript. Deleting removes it
+            permanently, along with any report.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-center gap-2">
+          {isInProgress && (
+            <Button variant="outline" onClick={handleAbandon} disabled={isAbandoning}>
+              {isAbandoning ? "Abandoning…" : "Abandon interview"}
+            </Button>
+          )}
+
+          {confirmDelete ? (
+            <>
+              <Button variant="destructive" onClick={handleDelete} disabled={isDeleting}>
+                {isDeleting ? "Deleting…" : "Yes, delete permanently"}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => setConfirmDelete(false)}
+                disabled={isDeleting}
+              >
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <Button variant="outline" onClick={() => setConfirmDelete(true)}>
+              <Trash2 className="h-4 w-4" aria-hidden />
+              Delete session
+            </Button>
+          )}
+        </CardContent>
+      </Card>
     </>
   );
 }
