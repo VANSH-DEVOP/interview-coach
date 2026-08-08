@@ -17,6 +17,9 @@ class AppException(Exception):
     def __init__(self, message: str = "An unexpected error occurred.", details: Any = None):
         self.message = message
         self.details = details
+        # Response headers the handler should copy onto the error response.
+        # Empty for most errors; 429 uses it for Retry-After.
+        self.headers: dict[str, str] = {}
         super().__init__(message)
 
 
@@ -48,6 +51,22 @@ class ValidationError(AppException):
 class PayloadTooLargeError(AppException):
     status_code = 413
     code = "payload_too_large"
+
+
+class RateLimitedError(AppException):
+    status_code = 429
+    code = "rate_limited"
+
+    def __init__(
+        self,
+        message: str = "Too many requests.",
+        details: Any = None,
+        *,
+        retry_after: int | None = None,
+    ):
+        super().__init__(message, details)
+        if retry_after is not None:
+            self.headers["Retry-After"] = str(retry_after)
 
 
 class StorageError(AppException):

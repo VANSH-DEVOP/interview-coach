@@ -69,6 +69,21 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
+    # -- Rate limiting ---------------------------------------------------------
+    # Counters are per-process (see app/core/rate_limit.py), so with N workers
+    # the effective ceiling is N x these values.
+    RATE_LIMIT_ENABLED: bool = True
+    # Credential stuffing defence. Per client IP.
+    RATE_LIMIT_AUTH_ATTEMPTS: int = 10
+    RATE_LIMIT_AUTH_WINDOW_SECONDS: int = 300
+    # Quota defence. Per user. Every one of these requests costs a Gemini call,
+    # and the free tier allows only 20/day across the whole deployment.
+    RATE_LIMIT_AI_REQUESTS: int = 20
+    RATE_LIMIT_AI_WINDOW_SECONDS: int = 3600
+    # Upload abuse / storage growth. Per user.
+    RATE_LIMIT_UPLOAD_REQUESTS: int = 10
+    RATE_LIMIT_UPLOAD_WINDOW_SECONDS: int = 3600
+
     # -- Storage ---------------------------------------------------------------
     # "local" today; "s3" | "r2" | "minio" are future providers. The value is
     # consumed only by the storage factory (app.services.storage).

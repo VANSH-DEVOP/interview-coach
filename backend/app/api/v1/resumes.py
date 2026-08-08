@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Response, UploadFile, status
 
 from app.api.deps import CurrentUser, get_resume_service
+from app.core.rate_limit import limit_by_user
 from app.schemas.common import Page, PageParams
 from app.schemas.resume import ResumeRead
 from app.services.resume_service import ResumeService
@@ -13,7 +14,13 @@ router = APIRouter(prefix="/resumes", tags=["resumes"])
 ResumeSvc = Annotated[ResumeService, Depends(get_resume_service)]
 
 
-@router.post("", response_model=ResumeRead, status_code=status.HTTP_201_CREATED)
+# Upload costs storage plus an embedding call per chunk.
+@router.post(
+    "",
+    response_model=ResumeRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(limit_by_user("upload"))],
+)
 async def upload_resume(file: UploadFile, current_user: CurrentUser, resumes: ResumeSvc) -> ResumeRead:
     content = await file.read()
     resume = await resumes.upload(

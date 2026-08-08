@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, status
 
 from app.api.deps import CurrentUser, get_interview_service
+from app.core.rate_limit import limit_by_user
 from app.models.interview_session import SessionStatus
 from app.schemas.common import Page, PageParams
 from app.schemas.interview import (
@@ -20,8 +21,16 @@ router = APIRouter(prefix="/interviews", tags=["interviews"])
 
 InterviewSvc = Annotated[InterviewService, Depends(get_interview_service)]
 
+# Applied to every route that costs a Gemini call. Reads are not limited.
+AiRateLimit = Depends(limit_by_user("ai"))
 
-@router.post("", response_model=InterviewRead, status_code=status.HTTP_201_CREATED)
+
+@router.post(
+    "",
+    response_model=InterviewRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[AiRateLimit],
+)
 async def create_interview(
     payload: InterviewCreate, current_user: CurrentUser, interviews: InterviewSvc
 ) -> InterviewRead:
@@ -56,7 +65,10 @@ async def get_interview(
 
 
 @router.post(
-    "/{session_id}/answers", response_model=AnswerRead, status_code=status.HTTP_201_CREATED
+    "/{session_id}/answers",
+    response_model=AnswerRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[AiRateLimit],
 )
 async def submit_answer(
     session_id: uuid.UUID,
@@ -68,7 +80,11 @@ async def submit_answer(
     return AnswerRead.model_validate(answer)
 
 
-@router.post("/{session_id}/complete", response_model=InterviewRead)
+@router.post(
+    "/{session_id}/complete",
+    response_model=InterviewRead,
+    dependencies=[AiRateLimit],
+)
 async def complete_interview(
     session_id: uuid.UUID, current_user: CurrentUser, interviews: InterviewSvc
 ) -> InterviewRead:
@@ -76,7 +92,11 @@ async def complete_interview(
     return InterviewRead.model_validate(session)
 
 
-@router.post("/{session_id}/reevaluate", response_model=ReportRead)
+@router.post(
+    "/{session_id}/reevaluate",
+    response_model=ReportRead,
+    dependencies=[AiRateLimit],
+)
 async def reevaluate_interview(
     session_id: uuid.UUID, current_user: CurrentUser, interviews: InterviewSvc
 ) -> ReportRead:
