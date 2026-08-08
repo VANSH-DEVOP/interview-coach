@@ -3,7 +3,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { CheckCircle2, ChevronRight, Timer, Trash2 } from "lucide-react";
+import {
+  CheckCircle2,
+  ChevronRight,
+  Pencil,
+  SkipForward,
+  Timer,
+  Trash2,
+  Wand2,
+} from "lucide-react";
 
 import { api, ApiError } from "@/lib/api-client";
 import type { Answer, InterviewSessionDetail, Question } from "@/types";
@@ -31,6 +39,11 @@ export default function InterviewSessionPage() {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCompleting, setIsCompleting] = useState(false);
+  const [isSkipping, setIsSkipping] = useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  // True while replacing an answer that already exists, which switches the
+  // submit from POST to PUT.
+  const [isEditing, setIsEditing] = useState(false);
   const [isAbandoning, setIsAbandoning] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   // Two-step confirmation: deleting takes the transcript and report with it,
@@ -62,7 +75,14 @@ export default function InterviewSessionPage() {
   const isCompleted = session?.status === "completed";
   const isAbandoned = session?.status === "abandoned";
   const isInProgress = session?.status === "in_progress";
-  const isTiming = Boolean(isInProgress && activeQuestion && !activeQuestion.answer);
+  const isTiming = Boolean(
+    isInProgress && activeQuestion && (!activeQuestion.answer || isEditing),
+  );
+  // Regenerating throws the question set away, so it is only offered while
+  // there is nothing to lose.
+  const canRegenerate = Boolean(
+    isInProgress && questions.length > 0 && answeredCount === 0,
+  );
 
   // Restart the clock whenever a different question becomes active.
   useEffect(() => {
@@ -80,21 +100,71 @@ export default function InterviewSessionPage() {
     return () => clearInterval(id);
   }, [isTiming, activeQuestion?.id]);
 
+  async function handleSkip() {
+    if (!activeQuestion) return;
+    setError(null);
+    setIsSkipping(true);
+    try {
+      await api.post(
+        `/interviews/${sessionId}/questions/${activeQuestion.id}/skip`,
+      );
+      await load();
+      handleNext();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Unable to skip this question.");
+    } finally {
+      setIsSkipping(false);
+    }
+  }
+
+  /** Reopen an answered question so it can be replaced. */
+  function handleStartEdit() {
+    if (!activeQuestion?.answer) return;
+    setDraft(activeQuestion.answer.content);
+    setIsEditing(true);
+    setError(null);
+    // The clock restarts: the reported duration should describe the new attempt.
+    questionStartedAt.current = Date.now();
+    setElapsed(0);
+  }
+
+  async function handleRegenerate() {
+    setError(null);
+    setIsRegenerating(true);
+    try {
+      await api.post(`/interviews/${sessionId}/regenerate-questions`);
+      setDraft("");
+      setActiveIndex(0);
+      await load();
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Unable to regenerate the questions.",
+      );
+    } finally {
+      setIsRegenerating(false);
+    }
+  }
+
   async function handleSubmitAnswer() {
     if (!activeQuestion || !draft.trim()) return;
     setError(null);
     setIsSubmitting(true);
     try {
-      const answer = await api.post<Answer>(`/interviews/${sessionId}/answers`, {
+      const body = {
         question_id: activeQuestion.id,
         content: draft.trim(),
         duration_seconds: Math.max(
           0,
           Math.round((Date.now() - questionStartedAt.current) / 1000),
         ),
-      });
+      };
+      // PUT replaces an existing answer (and its follow-up); POST creates one.
+      const answer = isEditing
+        ? await api.put<Answer>(`/interviews/${sessionId}/answers`, body)
+        : await api.post<Answer>(`/interviews/${sessionId}/answers`, body);
       // Reflect locally, then reload to pick up any AI follow-up question.
       setDraft("");
+      setIsEditing(false);
       setSession((prev) =>
         prev
           ? {
@@ -116,6 +186,7 @@ export default function InterviewSessionPage() {
   function handleNext() {
     setDraft("");
     setError(null);
+    setIsEditing(false);
     setActiveIndex((i) => Math.min(i + 1, questions.length - 1));
   }
 
@@ -172,9 +243,23 @@ export default function InterviewSessionPage() {
         }
       />
 
-      <p className="text-sm text-muted-foreground">
-        {answeredCount} of {questions.length} questions answered
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-muted-foreground">
+          {answeredCount} of {questions.length} questions answered
+        </p>
+        {canRegenerate && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRegenerate}
+            disabled={isRegenerating}
+            title="Replace these questions with a new set"
+          >
+            <Wand2 className="h-4 w-4" aria-hidden />
+            {isRegenerating ? "Regenerating…" : "Regenerate questions"}
+          </Button>
+        )}
+      </div>
 
       {isCompleted ? (
         <Card>
@@ -208,6 +293,9 @@ export default function InterviewSessionPage() {
                     {formatDuration(elapsed)}
                   </span>
                 )}
+                {activeQuestion.skipped && !activeQuestion.answer && (
+                  <Badge variant="secondary">skipped</Badge>
+                )}
                 <Badge variant="outline">{activeQuestion.question_type.replace("_", " ")}</Badge>
               </div>
             </div>
@@ -216,7 +304,7 @@ export default function InterviewSessionPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {activeQuestion.answer ? (
+            {activeQuestion.answer && !isEditing ? (
               <div className="rounded-md border bg-secondary/50 p-3">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-xs font-medium text-muted-foreground">Your answer</p>
@@ -245,9 +333,37 @@ export default function InterviewSessionPage() {
             )}
 
             <div className="flex flex-wrap items-center gap-2">
-              {!activeQuestion.answer && (
+              {(!activeQuestion.answer || isEditing) && (
                 <Button onClick={handleSubmitAnswer} disabled={isSubmitting || !draft.trim()}>
-                  {isSubmitting ? "Submitting…" : "Submit answer"}
+                  {isSubmitting
+                    ? "Saving…"
+                    : isEditing
+                      ? "Save new answer"
+                      : "Submit answer"}
+                </Button>
+              )}
+              {isEditing && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setIsEditing(false);
+                    setDraft("");
+                  }}
+                  disabled={isSubmitting}
+                >
+                  Cancel
+                </Button>
+              )}
+              {activeQuestion.answer && !isEditing && (
+                <Button variant="outline" onClick={handleStartEdit}>
+                  <Pencil className="h-4 w-4" aria-hidden />
+                  Change answer
+                </Button>
+              )}
+              {!activeQuestion.answer && !isEditing && (
+                <Button variant="outline" onClick={handleSkip} disabled={isSkipping}>
+                  <SkipForward className="h-4 w-4" aria-hidden />
+                  {isSkipping ? "Skipping…" : activeQuestion.skipped ? "Skipped" : "Skip"}
                 </Button>
               )}
               {activeIndex < questions.length - 1 && (

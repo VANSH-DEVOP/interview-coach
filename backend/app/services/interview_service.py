@@ -78,28 +78,68 @@ class InterviewService:
         )
         session = await self.interviews.add(session)
 
+        await self._generate_initial_questions(session, resume_text=resume_text, start_at=1)
+        return session
+
+    async def _generate_initial_questions(
+        self, session: InterviewSession, *, resume_text: str | None, start_at: int
+    ) -> None:
+        """Generate and persist a session's opening questions."""
         generated = await self.question_generator.initial_questions(
-            target_role=payload.target_role,
+            target_role=session.target_role,
             resume_text=resume_text,
-            resume_id=payload.resume_id,
+            resume_id=session.resume_id,
             spec=InterviewSpec(
-                interview_type=payload.interview_type.value,
-                difficulty=payload.difficulty.value,
-                question_count=payload.question_count,
+                interview_type=session.interview_type.value,
+                difficulty=session.difficulty.value,
+                question_count=session.question_count,
             ),
         )
-        for index, item in enumerate(generated, start=1):
+        for offset, item in enumerate(generated):
             self.interviews.session.add(
                 Question(
                     session_id=session.id,
-                    sequence_number=index,
+                    sequence_number=start_at + offset,
                     content=item.content,
                     question_type=QuestionType(item.question_type),
                     generation_metadata=item.metadata,
                 )
             )
         await self.interviews.session.flush()
-        return session
+
+    async def _generate_follow_up(
+        self,
+        session: InterviewSession,
+        question: Question,
+        answer_content: str,
+        user_id: uuid.UUID,
+    ) -> None:
+        """Ask for an adaptive follow-up and persist it if one comes back.
+
+        The resume goes through so the generator can probe the answer against
+        what the candidate actually claims on paper; without it the follow-up
+        only ever sees the last question and answer in isolation.
+        """
+        follow_up = await self.question_generator.follow_up(
+            question=question.content,
+            answer=answer_content,
+            resume_text=await self._resume_text(session, user_id),
+            resume_id=session.resume_id,
+        )
+        if follow_up is None:
+            return
+
+        self.interviews.session.add(
+            Question(
+                session_id=session.id,
+                parent_question_id=question.id,
+                sequence_number=await self.interviews.next_sequence_number(session.id),
+                content=follow_up.content,
+                question_type=QuestionType.FOLLOW_UP,
+                generation_metadata=follow_up.metadata,
+            )
+        )
+        await self.interviews.session.flush()
 
     async def list(
         self, user_id: uuid.UUID, *, status: SessionStatus | None, offset: int, limit: int
@@ -117,11 +157,7 @@ class InterviewService:
     async def submit_answer(
         self, session_id: uuid.UUID, user_id: uuid.UUID, payload: AnswerCreate
     ) -> Answer:
-        session = await self.interviews.get_owned(session_id, user_id)
-        if session is None:
-            raise NotFoundError("Interview session not found.")
-        if session.status is not SessionStatus.IN_PROGRESS:
-            raise ConflictError("This interview session is not accepting answers.")
+        session = await self._active_session(session_id, user_id)
 
         question = await self.interviews.get_question(payload.question_id, session_id)
         if question is None:
@@ -135,33 +171,110 @@ class InterviewService:
             duration_seconds=payload.duration_seconds,
         )
         self.interviews.session.add(answer)
+        # Answering a question the candidate had passed over reinstates it.
+        question.skipped = False
         await self.interviews.session.flush()
 
-        # AI seam: adaptive follow-up. The static generator returns None.
-        # The resume goes through so the generator can probe the answer against
-        # what the candidate actually claims on paper; without it the follow-up
-        # only ever sees the last question and answer in isolation.
-        follow_up = await self.question_generator.follow_up(
-            question=question.content,
-            answer=payload.content,
-            resume_text=await self._resume_text(session, user_id),
-            resume_id=session.resume_id,
-        )
-        if follow_up is not None:
-            next_seq = await self.interviews.next_sequence_number(session_id)
-            self.interviews.session.add(
-                Question(
-                    session_id=session.id,
-                    parent_question_id=question.id,
-                    sequence_number=next_seq,
-                    content=follow_up.content,
-                    question_type=QuestionType.FOLLOW_UP,
-                    generation_metadata=follow_up.metadata,
-                )
-            )
-            await self.interviews.session.flush()
-
+        await self._generate_follow_up(session, question, payload.content, user_id)
         return answer
+
+    async def _active_session(
+        self, session_id: uuid.UUID, user_id: uuid.UUID, *, with_questions: bool = False
+    ) -> InterviewSession:
+        """An in-progress session owned by this user, or raise."""
+        session = await self.interviews.get_owned(
+            session_id, user_id, with_questions=with_questions
+        )
+        if session is None:
+            raise NotFoundError("Interview session not found.")
+        if session.status is not SessionStatus.IN_PROGRESS:
+            raise ConflictError("This interview session is no longer in progress.")
+        return session
+
+    async def skip_question(
+        self, session_id: uuid.UUID, user_id: uuid.UUID, question_id: uuid.UUID
+    ) -> Question:
+        """Pass over a question without answering it.
+
+        Recorded rather than merely skipped in the UI, so an unanswered
+        question the candidate chose to leave is distinguishable from one they
+        never reached.
+        """
+        await self._active_session(session_id, user_id)
+
+        question = await self.interviews.get_question(question_id, session_id)
+        if question is None:
+            raise NotFoundError("Question not found in this session.")
+        if question.answer is not None:
+            raise ConflictError("An answered question cannot be skipped.")
+
+        question.skipped = True
+        await self.interviews.session.flush()
+        return question
+
+    async def update_answer(
+        self, session_id: uuid.UUID, user_id: uuid.UUID, payload: AnswerCreate
+    ) -> Answer:
+        """Replace an existing answer.
+
+        Any follow-up generated from the previous answer is deleted and
+        regenerated: it was a probe into something the candidate no longer
+        said, so leaving it would leave a question referring to an answer that
+        no longer exists.
+        """
+        session = await self._active_session(session_id, user_id)
+
+        question = await self.interviews.get_question(payload.question_id, session_id)
+        if question is None:
+            raise NotFoundError("Question not found in this session.")
+        if question.answer is None:
+            raise ConflictError("This question has not been answered yet.")
+
+        question.answer.content = payload.content
+        question.answer.duration_seconds = payload.duration_seconds
+        # Un-skip: providing an answer contradicts having passed.
+        question.skipped = False
+
+        for stale in await self.interviews.follow_ups_of(question.id):
+            await self.interviews.session.delete(stale)
+        await self.interviews.session.flush()
+
+        await self._generate_follow_up(session, question, payload.content, user_id)
+        return question.answer
+
+    async def regenerate_questions(
+        self, session_id: uuid.UUID, user_id: uuid.UUID
+    ) -> InterviewSession:
+        """Replace the question set with a freshly generated one.
+
+        Only before anything is answered. Afterwards, discarding the questions
+        would discard the answers with them -- at that point the honest action
+        is a new interview, not a silent reset.
+        """
+        session = await self._active_session(session_id, user_id, with_questions=True)
+
+        if any(question.answer is not None for question in session.questions):
+            raise ConflictError(
+                "Questions cannot be regenerated once an answer has been given."
+            )
+
+        for question in list(session.questions):
+            await self.interviews.session.delete(question)
+        await self.interviews.session.flush()
+
+        await self._generate_initial_questions(
+            session,
+            resume_text=await self._resume_text(session, user_id),
+            start_at=1,
+        )
+
+        # Expire the loaded collection before re-reading. The session object is
+        # in the identity map with `questions` already populated from before the
+        # delete, and SQLAlchemy will not overwrite a loaded collection on a
+        # re-query -- so the response would carry the ids of questions that no
+        # longer exist, which a client would render and then 404 on.
+        self.interviews.session.expire(session, ["questions"])
+        return await self.get_detail(session_id, user_id)
 
     async def abandon(self, session_id: uuid.UUID, user_id: uuid.UUID) -> InterviewSession:
         """Give up on an in-progress session without evaluating it.

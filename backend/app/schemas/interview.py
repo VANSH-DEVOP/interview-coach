@@ -52,6 +52,7 @@ class QuestionRead(BaseModel):
     sequence_number: int
     content: str
     question_type: QuestionType
+    skipped: bool
     answer: AnswerRead | None
 
 

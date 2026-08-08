@@ -12,6 +12,7 @@ from app.schemas.interview import (
     InterviewCreate,
     InterviewDetail,
     InterviewRead,
+    QuestionRead,
 )
 from app.schemas.report import ReportRead
 from app.services.evaluation_worker import run_evaluation
@@ -78,6 +79,47 @@ async def submit_answer(
 ) -> AnswerRead:
     answer = await interviews.submit_answer(session_id, current_user.id, payload)
     return AnswerRead.model_validate(answer)
+
+
+@router.post("/{session_id}/questions/{question_id}/skip", response_model=QuestionRead)
+async def skip_question(
+    session_id: uuid.UUID,
+    question_id: uuid.UUID,
+    current_user: CurrentUser,
+    interviews: InterviewSvc,
+) -> QuestionRead:
+    """Pass over a question without answering it. No AI call, so no AI limit."""
+    question = await interviews.skip_question(session_id, current_user.id, question_id)
+    return QuestionRead.model_validate(question)
+
+
+@router.put(
+    "/{session_id}/answers",
+    response_model=AnswerRead,
+    dependencies=[AiRateLimit],
+)
+async def update_answer(
+    session_id: uuid.UUID,
+    payload: AnswerCreate,
+    current_user: CurrentUser,
+    interviews: InterviewSvc,
+) -> AnswerRead:
+    """Replace an answer, regenerating any follow-up it produced."""
+    answer = await interviews.update_answer(session_id, current_user.id, payload)
+    return AnswerRead.model_validate(answer)
+
+
+@router.post(
+    "/{session_id}/regenerate-questions",
+    response_model=InterviewDetail,
+    dependencies=[AiRateLimit],
+)
+async def regenerate_questions(
+    session_id: uuid.UUID, current_user: CurrentUser, interviews: InterviewSvc
+) -> InterviewDetail:
+    """Swap the question set for a freshly generated one. Only before answering."""
+    session = await interviews.regenerate_questions(session_id, current_user.id)
+    return InterviewDetail.model_validate(session)
 
 
 @router.post("/{session_id}/abandon", response_model=InterviewRead)

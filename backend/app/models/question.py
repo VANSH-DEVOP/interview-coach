@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Enum, ForeignKey, Text, func
+from sqlalchemy import Boolean, Enum, ForeignKey, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -38,6 +38,12 @@ class Question(Base, UUIDPrimaryKeyMixin):
     question_type: Mapped[QuestionType] = mapped_column(
         Enum(QuestionType, name="question_type", values_callable=lambda e: [x.value for x in e]),
         nullable=False,
+    )
+    # Explicitly passed over. Distinct from simply having no answer yet: this
+    # records that the candidate decided not to answer, which is what lets the
+    # UI show a "skipped" state instead of an unfinished one.
+    skipped: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
     )
     # AI provenance: model name, prompt version, etc. Set by the future
     # Gemini/LangGraph generation pipeline.

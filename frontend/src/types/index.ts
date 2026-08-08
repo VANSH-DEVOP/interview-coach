@@ -47,6 +47,8 @@ export interface Question {
   sequence_number: number;
   content: string;
   question_type: QuestionType;
+  /** Explicitly passed over, as opposed to simply not answered yet. */
+  skipped: boolean;
   answer: Answer | null;
 }
 

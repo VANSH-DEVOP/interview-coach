@@ -136,6 +136,15 @@ describe("requests", () => {
     expect(callInit(0).headers.get("Content-Type")).toBeNull();
   });
 
+  it("sends PUT with a JSON body", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}));
+
+    await api.put("/interviews/1/answers", { content: "revised" });
+
+    expect(callInit(0).method).toBe("PUT");
+    expect(callInit(0).body).toBe(JSON.stringify({ content: "revised" }));
+  });
+
   it("returns undefined for 204 rather than failing to parse an empty body", async () => {
     fetchMock.mockResolvedValueOnce(noContent());
 

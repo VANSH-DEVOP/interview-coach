@@ -57,6 +57,11 @@ class InterviewRepository(BaseRepository[InterviewSession]):
         )
         return int((await self.session.execute(stmt)).scalar_one()) + 1
 
+    async def follow_ups_of(self, question_id: uuid.UUID) -> list[Question]:
+        """Questions generated from a given question's answer."""
+        stmt = select(Question).where(Question.parent_question_id == question_id)
+        return list((await self.session.execute(stmt)).scalars().all())
+
     async def get_question(
         self, question_id: uuid.UUID, session_id: uuid.UUID
     ) -> Question | None:
