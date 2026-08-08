@@ -19,27 +19,28 @@ Things that were wired but did not actually work. All closed; see commits
 - [x] **Gemini reports render an empty summary.** `report-view.tsx:53` reads `detailed_feedback.summary`, but only `HeuristicEvaluator` sets it (`evaluator.py:149`); `GeminiEvaluator` writes only `recommendations` + `per_question` (`evaluator.py:228`). Add `summary` to the Gemini prompt + parse.
   → **Done.** Prompt asks for it, parser reads the usual key aliases, and a score-and-role line is synthesised if the model omits it. Verified against the live model.
 ---
-## Phase 1 — Complete what's half-built (P1) — mostly done (2026-08-08)
+## Phase 1 — Complete what's half-built (P1) — ✅ COMPLETE (2026-08-08)
 Scaffolding exists; the feature does not.
 ### Interview flow
 - [x] **Follow-ups have no resume context.** `interview_service.py:136` calls `follow_up(..., resume_text=None)` and never consults RAG. Pass the session's resume text and add a RAG retrieval keyed on the answer.
   → **Done** (`e1a985f`). `follow_up` seam widened with `resume_id`; retrieval is keyed on question+answer, not the role. Also fixed a latent `MissingGreenlet` crash in the follow-up branch (`session.questions` lazy-loaded on a session fetched without them) — never fired only because the model was 404ing. Replaced with `InterviewRepository.next_sequence_number`.
-- [ ] **Async evaluation.** `complete()` runs the evaluator inline, so ending an interview blocks on a Gemini round-trip. `ReportStatus.PENDING / GENERATING / FAILED` are currently dead code — write the report as `PENDING`, hand off to a worker, and have the frontend poll. (`app/models/evaluation_report.py:16`)
+- [x] **Async evaluation.** (`7d87731`) `complete()` writes a PENDING report and returns; `app/services/evaluation_worker.py` runs it through GENERATING → COMPLETED/FAILED on its own session, never raising. `recover_stale_reports()` on startup flips work abandoned by a restart to FAILED so the UI shows a retry rather than an endless spinner. Frontend polls every 2s and stops once settled.
+  - [ ] **Follow-up:** BackgroundTasks is in-process. A real queue (arq/celery) would survive restarts; the status machine and worker function would not change, only the two call sites in the router.
 - [x] **Abandon / delete a session.** (`ac2552f`) `POST /interviews/{id}/abandon` keeps the transcript; `DELETE /interviews/{id}` cascades to questions, answers, and the report (verified against Postgres). `SessionStatus.CREATED` is still unreachable — sessions are created IN_PROGRESS, which is arguably correct; left alone deliberately.
   ~~`SessionStatus.CREATED` and `ABANDONED` are unreachable~~ — sessions are created as `IN_PROGRESS` and there is no endpoint to abandon or delete one, even though `complete()` already handles the abandoned case (`interview_service.py:160`).
 - [x] **Answer timing.** (`836c0b8`) Per-question timer in the UI, sent with the answer, shown on answered questions. Verified round-trip.
   - [ ] **Follow-up:** the evaluator still doesn't see timing. Pacing feedback ("4 minutes on a 30-second question") needs `duration` in `QAPair` and the prompt.
-- [ ] **Question controls.** No skip, no re-answer, no regenerate-questions.
+- [x] **Question controls.** (`56e6924`) Skip (persisted via migration 0003, withdrawn by answering), re-answer via `PUT /interviews/{id}/answers` (deletes and regenerates the now-stale follow-up), and regenerate-questions (refused once anything is answered). Found a real bug: the regenerate response returned the *old* question ids because SQLAlchemy will not overwrite an already-loaded collection on re-query.
 - [x] **Interview configuration.** (`1e09557`, `2a84fae`) `interview_type` / `difficulty` / `question_count` on `InterviewCreate`, persisted via migration 0002, shaping the prompt, with UI selects. Migration verified up→down→up against Postgres with no autogenerate drift. System-design questions are stored as `question_type="technical"` — widening that enum was not needed.
   - Static fallback pool grew 3 → 10 distinct questions so any allowed count is honoured without repeats; its default output changed 3 → 5.
 ### Resumes
 - [x] **Re-parse / re-index endpoint.** (`ddd07b4`) `POST /resumes/{id}/reprocess` re-reads the blob, re-parses, and rebuilds the index (dropping the old one first — chunk ids are positional). Adds `tests/test_resume_service.py`; the service previously had no tests at all.
-- [ ] **Resume preview** in the UI (currently download-only).
+- [x] **Resume preview** (`fe11933`) `GET /resumes/{id}/preview` returns the parsed text with word/character counts — kept off `ResumeRead` since it can run to thousands of characters. Makes a scanned PDF that extracts to nothing visible, which previously looked identical to a working resume.
 ### Reports & progress tracking
 - [x] **Progress over time.** (`e5c23ad`) `GET /reports/progress` + an inline-SVG trend chart on the dashboard. Unscored reports are excluded rather than plotted as zero; `improvement` compares half-means and stays null below 4 sessions.
 - [x] **Per-question scores.** (`63df2f9`) 0-10 per entry, clamped, alias-tolerant, `"8.5/10"` parsed; unparseable stays null rather than becoming 0. Heuristic scores on the same 80-word scale. Colour-coded badges in the report.
-- [ ] **Skill/category breakdown** across reports.
-- [ ] **Report export (PDF) and sharing.**
+- [x] **Skill/category breakdown** (`a43a99f`) `recurring_strengths` / `recurring_weaknesses` on `/reports/progress`, grouped by keyword taxonomy in `app/services/skill_themes.py`. Deterministic and testable by design — asking the model to categorise its own output would cost a call per report and vary per run. Unmatched feedback lands in "Other" rather than being dropped.
+- [x] **Report export and sharing.** (`f605289`) `GET /reports/{id}/export` returns Markdown as a download; a print stylesheet + "Print / PDF" button covers PDF via the browser. Server-side PDF was rejected deliberately: WeasyPrint needs cairo/pango in the slim image, ReportLab means maintaining a hand-built layout. Revisit only if PDFs must be generated without a browser.
 ### Frontend
 - [x] **Pagination controls.** (`6896e83`) Shared `Pagination` component wired into interviews and reports. Verified: 7 records at size=3 paginate with zero overlap.
 - [x] **Expose `/interviews/{id}/reevaluate`** (`6896e83`) — "Re-evaluate" on the session report page. Updates the report in place (same id).
