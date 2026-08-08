@@ -28,7 +28,6 @@ from app.models.question import Question
 from app.models.resume import Resume
 from app.schemas.interview import AnswerCreate, InterviewCreate
 from app.services.ai.base import GeneratedQuestion, QuestionGenerator, StaticQuestionGenerator
-from app.services.ai.evaluator import HeuristicEvaluator
 from app.services.interview_service import InterviewService
 
 
@@ -150,7 +149,6 @@ def service() -> InterviewService:
         interviews,
         resumes,
         StaticQuestionGenerator(),
-        HeuristicEvaluator(),
         reports,
     )
 
@@ -183,7 +181,6 @@ def _service_with(generator: QuestionGenerator, resumes=None) -> InterviewServic
         _FakeInterviewRepository(fake_session),
         _FakeResumeRepository(resumes),
         generator,
-        HeuristicEvaluator(),
         _FakeReportRepository(fake_session),
     )
 
@@ -486,7 +483,9 @@ async def test_full_interview_flow_produces_completed_report(service):
         )
         assert isinstance(answer, Answer)
 
-    # 3. Complete -> a populated, COMPLETED report is created.
+    # 3. Complete -> the session closes and a PENDING report is queued.
+    #    The scoring itself happens in the background worker, which the API
+    #    tests exercise end to end (tests/api/test_interviews_api.py).
     completed = await service.complete(session.id, user_id)
     assert completed.status is SessionStatus.COMPLETED
     assert completed.completed_at is not None
@@ -495,12 +494,9 @@ async def test_full_interview_flow_produces_completed_report(service):
     reports = service.interviews.session.reports
     assert len(reports) == 1
     report = reports[0]
-    assert report.status is ReportStatus.COMPLETED
-    assert report.overall_score is not None
-    assert report.overall_score > 0
-    assert report.strengths  # non-empty
-    assert "per_question" in report.detailed_feedback
-    assert len(report.detailed_feedback["per_question"]) == 5
+    assert report.status is ReportStatus.PENDING
+    # Nothing is scored yet -- completing must not block on the provider.
+    assert report.overall_score is None
 
 
 async def test_complete_twice_raises_conflict(service):
@@ -537,9 +533,14 @@ async def test_reevaluate_updates_existing_report_in_place(service):
     await service.complete(session.id, user_id)
 
     report = await service.reevaluate(session.id, user_id)
-    assert report.status is ReportStatus.COMPLETED
-    assert report.overall_score is not None
-    # No duplicate report was created; the existing one was updated in place.
+
+    # Queued, not run: the router hands the work to the background worker.
+    assert report.status is ReportStatus.PENDING
+    # The stale result is cleared, so the UI cannot show an old score next to a
+    # "generating" badge as though it were the new one.
+    assert report.overall_score is None
+    assert report.strengths is None
+    # No duplicate report was created; the existing one was reset in place.
     assert len(service.interviews.session.reports) == 1
 
 

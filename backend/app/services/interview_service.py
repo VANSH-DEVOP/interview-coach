@@ -18,7 +18,6 @@ from app.repositories.report_repository import ReportRepository
 from app.repositories.resume_repository import ResumeRepository
 from app.schemas.interview import AnswerCreate, InterviewCreate
 from app.services.ai.base import InterviewSpec, QuestionGenerator
-from app.services.ai.evaluator import EvaluationResult, Evaluator, QAPair
 
 
 def _utcnow() -> datetime:
@@ -34,13 +33,13 @@ class InterviewService:
         interviews: InterviewRepository,
         resumes: ResumeRepository,
         question_generator: QuestionGenerator,
-        evaluator: Evaluator,
         reports: ReportRepository,
     ) -> None:
+        # No evaluator here: this service starts evaluations, it does not run
+        # them. app.services.evaluation_worker owns that, on its own session.
         self.interviews = interviews
         self.resumes = resumes
         self.question_generator = question_generator
-        self.evaluator = evaluator
         self.reports = reports
 
     async def _resume_text(
@@ -55,19 +54,6 @@ class InterviewService:
             return None
         resume = await self.resumes.get_owned(session.resume_id, user_id)
         return resume.parsed_text if resume is not None else None
-
-    async def _evaluate_session(self, session: InterviewSession) -> EvaluationResult:
-        """Run the evaluator over a session's transcript."""
-        transcript = [
-            QAPair(
-                question=q.content,
-                answer=q.answer.content if q.answer is not None else None,
-            )
-            for q in session.questions
-        ]
-        return await self.evaluator.evaluate(
-            target_role=session.target_role, transcript=transcript
-        )
 
     async def create(self, user_id: uuid.UUID, payload: InterviewCreate) -> InterviewSession:
         resume_text: str | None = None
@@ -221,19 +207,12 @@ class InterviewService:
         session.status = SessionStatus.COMPLETED
         session.completed_at = _utcnow()
 
-        # Evaluate the transcript and persist a completed report. The evaluator
-        # uses Gemini when configured and a deterministic heuristic otherwise,
-        # so a populated report is always produced.
-        result = await self._evaluate_session(session)
+        # A PENDING report, not a finished one: evaluation is a provider
+        # round-trip and must not block the request that ends the interview.
+        # The router hands the work to app.services.evaluation_worker and the
+        # client polls the report until it leaves PENDING/GENERATING.
         self.interviews.session.add(
-            EvaluationReport(
-                session_id=session.id,
-                status=ReportStatus.COMPLETED,
-                overall_score=result.overall_score,
-                strengths=result.strengths,
-                weaknesses=result.weaknesses,
-                detailed_feedback=result.detailed_feedback,
-            )
+            EvaluationReport(session_id=session.id, status=ReportStatus.PENDING)
         )
         await self.interviews.session.flush()
         return session
@@ -241,15 +220,16 @@ class InterviewService:
     async def reevaluate(
         self, session_id: uuid.UUID, user_id: uuid.UUID
     ) -> EvaluationReport:
-        """Regenerate the evaluation report for an already-completed session.
+        """Queue a fresh evaluation for an already-completed session.
 
-        Useful after evaluator improvements so users can refresh an existing
-        report without re-running the interview. Updates the report in place if
-        one exists, otherwise creates it.
+        Used after evaluator improvements, and to retry a report that failed.
+        Resets the existing report to PENDING in place rather than creating a
+        second one -- the session/report relationship is 1:1, and a new row
+        would orphan whatever the user is currently looking at.
+
+        Returns immediately with the PENDING report; the router queues the work.
         """
-        session = await self.interviews.get_owned(
-            session_id, user_id, with_questions=True
-        )
+        session = await self.interviews.get_owned(session_id, user_id)
         if session is None:
             raise NotFoundError("Interview session not found.")
         if session.status is not SessionStatus.COMPLETED:
@@ -257,17 +237,19 @@ class InterviewService:
                 "Only completed interview sessions can be re-evaluated."
             )
 
-        result = await self._evaluate_session(session)
         report = await self.reports.get_owned_by_session(session_id, user_id)
         if report is None:
             report = EvaluationReport(session_id=session.id)
             self.interviews.session.add(report)
 
-        report.status = ReportStatus.COMPLETED
-        report.overall_score = result.overall_score
-        report.strengths = result.strengths
-        report.weaknesses = result.weaknesses
-        report.detailed_feedback = result.detailed_feedback
+        report.status = ReportStatus.PENDING
+        # The previous result is cleared deliberately: leaving stale strengths
+        # and a stale score on screen beside a "generating" badge reads as if
+        # the new evaluation had already produced them.
+        report.overall_score = None
+        report.strengths = None
+        report.weaknesses = None
+        report.detailed_feedback = None
         await self.interviews.session.flush()
         await self.interviews.session.refresh(report)
         return report

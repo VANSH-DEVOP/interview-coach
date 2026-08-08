@@ -11,11 +11,16 @@ from app.core.logging import configure_logging
 from app.db.session import engine
 from app.middleware.error_handler import register_exception_handlers
 from app.middleware.request_logging import RequestLoggingMiddleware
+from app.services.evaluation_worker import recover_stale_reports
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
+    # Evaluations run as in-process background tasks, so a restart abandons any
+    # that were in flight. Left alone they would sit on GENERATING forever and
+    # the UI would spin indefinitely; FAILED is visible and re-evaluatable.
+    await recover_stale_reports()
     yield
     await engine.dispose()
 

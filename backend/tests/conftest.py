@@ -20,6 +20,7 @@ from app.core import rate_limit
 from app.core.config import get_settings
 from app.db.session import engine, get_session
 from app.main import app
+from app.services import evaluation_worker
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
@@ -137,42 +138,65 @@ def database_url() -> str:
 
 
 @pytest.fixture
-async def db_session(database_url: str):
-    """A session whose writes are rolled back at the end of the test.
+async def db_connection(database_url: str):
+    """A connection inside an outer transaction that is always rolled back.
 
-    An outer transaction is opened on a dedicated connection and the session
-    joins it via savepoints, so the application's own `commit()` inside
-    get_session succeeds without making anything durable. Rolling the outer
-    transaction back leaves the database exactly as it was, which is what makes
-    these tests order-independent without truncating tables between them.
+    Everything in a test rides on this one connection, which is what makes the
+    tests order-independent without truncating tables between them.
     """
     test_engine = create_async_engine(database_url, poolclass=NullPool)
     async with test_engine.connect() as connection:
         transaction = await connection.begin()
-        session = AsyncSession(
-            bind=connection,
-            expire_on_commit=False,
-            join_transaction_mode="create_savepoint",
-        )
         try:
-            yield session
+            yield connection
         finally:
-            await session.close()
             await transaction.rollback()
     await test_engine.dispose()
 
 
+def _bind_session(connection) -> AsyncSession:
+    """A session joined to the test transaction via savepoints.
+
+    `create_savepoint` is what lets application code call commit() normally
+    without making anything durable.
+    """
+    return AsyncSession(
+        bind=connection,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
+
+
 @pytest.fixture
-async def api(db_session, monkeypatch):
+async def db_session(db_connection):
+    """A session whose writes are rolled back at the end of the test."""
+    session = _bind_session(db_connection)
+    try:
+        yield session
+    finally:
+        await session.close()
+
+
+@pytest.fixture
+async def api(db_session, db_connection, monkeypatch):
     """HTTP client wired to the transactional test session.
 
     AI is forced off and rate limiting disabled for the duration: these tests
     assert on API behaviour, and neither a live provider (non-deterministic,
     20 requests/day) nor a shared counter belongs in that.
+
+    The background evaluation worker deliberately opens its *own* session,
+    since by the time it runs the request's session is closed. That would step
+    outside the test transaction and see none of the test's data, so its
+    session factory is pointed at the same connection here. Without this the
+    worker silently finds no session and every report stays PENDING.
     """
     settings = get_settings()
     monkeypatch.setattr(settings, "GEMINI_API_KEY", None)
     monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", False)
+    monkeypatch.setattr(
+        evaluation_worker, "AsyncSessionFactory", lambda: _bind_session(db_connection)
+    )
 
     async def _override_session():
         yield db_session

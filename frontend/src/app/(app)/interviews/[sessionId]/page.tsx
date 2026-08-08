@@ -183,7 +183,7 @@ export default function InterviewSessionPage() {
             <div>
               <p className="font-medium">This interview is complete.</p>
               <p className="text-sm text-muted-foreground">
-                Your evaluation report is ready.
+                Scoring runs in the background — open the report to watch it land.
               </p>
             </div>
             <Link href={`/interviews/${sessionId}/report`}>
