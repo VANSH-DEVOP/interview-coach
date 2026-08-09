@@ -21,6 +21,7 @@ from app.core.security import decode_token
 from app.db.session import get_session
 from app.models.user import User
 from app.repositories.interview_repository import InterviewRepository
+from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.report_repository import ReportRepository
 from app.repositories.resume_repository import ResumeRepository
 from app.repositories.user_repository import UserRepository
@@ -58,6 +59,10 @@ def get_interview_repository(session: DbSession) -> InterviewRepository:
 
 def get_report_repository(session: DbSession) -> ReportRepository:
     return ReportRepository(session)
+
+
+def get_refresh_token_repository(session: DbSession) -> RefreshTokenRepository:
+    return RefreshTokenRepository(session)
 
 
 # -- AI Services ------------------------------------------------------------------
@@ -101,8 +106,9 @@ def get_rag_service() -> "RAGService | None":
 # -- Services ------------------------------------------------------------------
 def get_auth_service(
     users: Annotated[UserRepository, Depends(get_user_repository)],
+    tokens: Annotated[RefreshTokenRepository, Depends(get_refresh_token_repository)],
 ) -> AuthService:
-    return AuthService(users)
+    return AuthService(users, tokens)
 
 
 def get_user_service(

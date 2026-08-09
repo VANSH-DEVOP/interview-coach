@@ -54,6 +54,10 @@ export function getAccessToken(): string | null {
   return readCookie(ACCESS_TOKEN_KEY);
 }
 
+export function getRefreshToken(): string | null {
+  return readCookie(REFRESH_TOKEN_KEY);
+}
+
 // -- Core request -------------------------------------------------------------
 
 async function rawRequest<T>(

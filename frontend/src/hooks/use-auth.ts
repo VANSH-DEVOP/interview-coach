@@ -5,7 +5,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { api, clearTokens, getAccessToken, setTokens } from "@/lib/api-client";
+import {
+  api,
+  clearTokens,
+  getAccessToken,
+  getRefreshToken,
+  setTokens,
+} from "@/lib/api-client";
 import type { TokenPair, User } from "@/types";
 
 interface AuthState {
@@ -60,11 +66,30 @@ export function useAuth() {
     [loadUser, router]
   );
 
-  const logout = useCallback(() => {
-    clearTokens();
-    setState({ user: null, isLoading: false });
-    router.push("/login");
-  }, [router]);
+  const logout = useCallback(
+    async (everywhere = false) => {
+      const refreshToken = getRefreshToken();
+      // Clearing the cookie only stops *this* browser using the token. Until
+      // the server revokes it, a copy taken from the machine stays valid for
+      // the full refresh lifetime.
+      if (refreshToken) {
+        try {
+          await api.post("/auth/logout", {
+            refresh_token: refreshToken,
+            everywhere,
+          });
+        } catch {
+          // Offline, or the token was already dead. Either way the user asked
+          // to be signed out, so sign them out locally rather than trapping
+          // them on the page with an error they cannot act on.
+        }
+      }
+      clearTokens();
+      setState({ user: null, isLoading: false });
+      router.push("/login");
+    },
+    [router]
+  );
 
   return { ...state, login, register, logout, reload: loadUser };
 }
