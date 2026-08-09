@@ -10,7 +10,7 @@ from functools import lru_cache
 from typing import Annotated
 
 import jwt as pyjwt
-from fastapi import Depends, Request
+from fastapi import BackgroundTasks, Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +30,7 @@ from app.services.ai.rag import RAGService
 from app.services.ai.vector_store import get_vector_store
 from app.services.auth_service import AuthService
 from app.services.interview_service import InterviewService
+from app.services.job_queue import EvaluationQueue
 from app.services.report_service import ReportService
 from app.services.resume_service import ResumeService
 from app.services.storage import get_storage_service
@@ -134,6 +135,21 @@ def get_interview_service(
         get_question_generator(rag_service=get_rag_service()),
         reports,
     )
+
+
+# -- Background work -------------------------------------------------------------
+def get_evaluation_queue(request: Request, background: BackgroundTasks) -> EvaluationQueue:
+    """Handle for scheduling an evaluation off the request path.
+
+    The pool is opened once in the lifespan and lives on app.state; `getattr`
+    rather than attribute access because the lifespan does not run under
+    httpx's ASGITransport, and a missing pool is a supported state (it means
+    the in-process fallback), not an error.
+    """
+    return EvaluationQueue(getattr(request.app.state, "arq_pool", None), background)
+
+
+EvaluationQueueDep = Annotated[EvaluationQueue, Depends(get_evaluation_queue)]
 
 
 # -- Authentication -------------------------------------------------------------

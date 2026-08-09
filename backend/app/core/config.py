@@ -47,6 +47,20 @@ class Settings(BaseSettings):
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
 
+    # -- Job queue -------------------------------------------------------------
+    # When set, evaluations are handed to the arq worker over Redis and survive
+    # a restart of the web process. When unset the app falls back to in-process
+    # background tasks, which is fine for local development and tests but loses
+    # work on restart -- see app/services/job_queue.py.
+    REDIS_URL: str | None = None
+    # A single evaluation is one provider round-trip; well under a minute in
+    # practice, but the free tier can be slow.
+    EVALUATION_JOB_TIMEOUT_SECONDS: int = 300
+    # Attempts, not retries: 3 means the original run plus two retries. arq
+    # backs off between them, which is what makes this worth having over a
+    # single in-process attempt.
+    EVALUATION_MAX_TRIES: int = 3
+
     # -- AI provider ----------------------------------------------------------
     # When set, the Gemini-backed generator/evaluator activate; otherwise the
     # app falls back to deterministic local implementations (no key required).

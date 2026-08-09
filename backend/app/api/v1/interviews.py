@@ -1,9 +1,14 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
-from app.api.deps import CurrentUser, get_interview_service, limit_by_user
+from app.api.deps import (
+    CurrentUser,
+    EvaluationQueueDep,
+    get_interview_service,
+    limit_by_user,
+)
 from app.models.interview_session import SessionStatus
 from app.schemas.common import Page, PageParams
 from app.schemas.interview import (
@@ -15,7 +20,6 @@ from app.schemas.interview import (
     QuestionRead,
 )
 from app.schemas.report import ReportRead
-from app.services.evaluation_worker import run_evaluation
 from app.services.interview_service import InterviewService
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
@@ -147,19 +151,19 @@ async def delete_interview(
 )
 async def complete_interview(
     session_id: uuid.UUID,
-    background: BackgroundTasks,
+    queue: EvaluationQueueDep,
     current_user: CurrentUser,
     interviews: InterviewSvc,
 ) -> InterviewRead:
-    """End the interview. The report is generated afterwards, in the background.
+    """End the interview. The report is generated afterwards, out of band.
 
     Returns as soon as the session is closed and a PENDING report exists; the
     client polls /reports/by-session/{id} until it leaves PENDING/GENERATING.
     """
     session = await interviews.complete(session_id, current_user.id)
-    # Queued after the response is sent, so the request does not wait on the
-    # provider. The task opens its own database session.
-    background.add_task(run_evaluation, session_id, current_user.id)
+    # Handed off rather than awaited, so the request does not wait on the
+    # provider. The job opens its own database session.
+    await queue.enqueue(session_id, current_user.id)
     return InterviewRead.model_validate(session)
 
 
@@ -170,7 +174,7 @@ async def complete_interview(
 )
 async def reevaluate_interview(
     session_id: uuid.UUID,
-    background: BackgroundTasks,
+    queue: EvaluationQueueDep,
     current_user: CurrentUser,
     interviews: InterviewSvc,
 ) -> ReportRead:
@@ -179,5 +183,5 @@ async def reevaluate_interview(
     Also the retry path for a FAILED report. Returns the PENDING report.
     """
     report = await interviews.reevaluate(session_id, current_user.id)
-    background.add_task(run_evaluation, session_id, current_user.id)
+    await queue.enqueue(session_id, current_user.id)
     return ReportRead.model_validate(report)

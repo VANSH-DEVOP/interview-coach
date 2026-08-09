@@ -37,6 +37,16 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
     env:
       POSTGRES_HOST: localhost
       POSTGRES_PORT: 5432
@@ -91,11 +101,12 @@ jobs:
           alembic upgrade head
 
       - name: Tests
-        # REQUIRE_TEST_DATABASE turns the "no database, skip" path into a hard
-        # failure. Without it, a broken Postgres service would silently skip
-        # every database-backed test and still report a green build.
+        # These turn the "no service, skip" paths into hard failures. Without
+        # them, a broken Postgres or Redis container would silently skip every
+        # test that needed it and still report a green build.
         env:
           REQUIRE_TEST_DATABASE: "1"
+          REQUIRE_TEST_REDIS: "1"
         run: pytest -q --no-header -rs
 
   frontend:

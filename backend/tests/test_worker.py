@@ -1,0 +1,105 @@
+"""The arq worker's retry policy.
+
+`run_evaluation` swallows failures and writes FAILED, which is right when there
+is nothing to retry. The worker must do the opposite on every attempt but the
+last: a swallowed exception is a job arq considers successful, so retries would
+silently never happen and the queue would buy nothing over BackgroundTasks.
+"""
+
+import uuid
+
+import pytest
+
+from app import worker
+from app.core.config import get_settings
+
+
+@pytest.fixture
+def session_id() -> uuid.UUID:
+    return uuid.uuid4()
+
+
+@pytest.fixture
+def spy(monkeypatch):
+    """Records what the worker did without touching a database or a provider."""
+    calls: dict[str, list] = {"evaluated": [], "failed": []}
+
+    async def fake_evaluate(sid, uid):
+        calls["evaluated"].append((sid, uid))
+        if calls.get("error"):
+            raise calls["error"][0]
+
+    async def fake_mark_failed(sid):
+        calls["failed"].append(sid)
+
+    monkeypatch.setattr(worker, "evaluate", fake_evaluate)
+    monkeypatch.setattr(worker, "mark_failed", fake_mark_failed)
+    return calls
+
+
+async def test_a_successful_job_evaluates_and_marks_nothing_failed(spy, session_id):
+    user_id = uuid.uuid4()
+
+    await worker.evaluate_session({"job_try": 1}, str(session_id), str(user_id))
+
+    assert spy["evaluated"] == [(session_id, user_id)]
+    assert spy["failed"] == []
+
+
+async def test_ids_are_parsed_back_into_uuids(spy, session_id):
+    """They cross the queue as strings; the evaluator's signature wants UUIDs."""
+    await worker.evaluate_session({"job_try": 1}, str(session_id), str(uuid.uuid4()))
+
+    sid, uid = spy["evaluated"][0]
+    assert isinstance(sid, uuid.UUID) and isinstance(uid, uuid.UUID)
+
+
+async def test_a_non_final_failure_is_raised_so_arq_retries(spy, session_id):
+    spy["error"] = [RuntimeError("provider timed out")]
+
+    with pytest.raises(RuntimeError):
+        await worker.evaluate_session({"job_try": 1}, str(session_id), str(uuid.uuid4()))
+
+    # Crucially not marked FAILED: a retry is still coming, and the user would
+    # have been shown a dead report with a retry button for work still in flight.
+    assert spy["failed"] == []
+
+
+async def test_the_final_failure_marks_the_report_and_stops(spy, session_id):
+    spy["error"] = [RuntimeError("provider timed out")]
+    last = get_settings().EVALUATION_MAX_TRIES
+
+    # No raise: arq has exhausted its tries, so re-raising only adds noise.
+    await worker.evaluate_session({"job_try": last}, str(session_id), str(uuid.uuid4()))
+
+    assert spy["failed"] == [session_id]
+
+
+async def test_a_try_past_the_limit_still_marks_failed(spy, session_id):
+    """Defensive: max_tries is configurable and arq owns the counter."""
+    spy["error"] = [RuntimeError("provider timed out")]
+    beyond = get_settings().EVALUATION_MAX_TRIES + 5
+
+    await worker.evaluate_session({"job_try": beyond}, str(session_id), str(uuid.uuid4()))
+
+    assert spy["failed"] == [session_id]
+
+
+def test_worker_settings_expose_what_arq_reads():
+    """arq pulls these off the class as Worker kwargs; a callable or a missing
+    name is a worker that starts and never runs the right function."""
+    settings = get_settings()
+
+    assert worker.evaluate_session in worker.WorkerSettings.functions
+    assert worker.WorkerSettings.max_tries == settings.EVALUATION_MAX_TRIES
+    assert worker.WorkerSettings.job_timeout == settings.EVALUATION_JOB_TIMEOUT_SECONDS
+    # A RedisSettings instance, not a factory -- arq does not call it.
+    assert not callable(worker.WorkerSettings.redis_settings)
+
+
+def test_the_registered_name_matches_what_the_api_enqueues():
+    """arq resolves jobs by string. A rename on one side alone gives jobs that
+    enqueue cleanly and are never executed -- reports stuck PENDING forever."""
+    from app.services.job_queue import EVALUATE_SESSION
+
+    assert worker.evaluate_session.__name__ == EVALUATE_SESSION

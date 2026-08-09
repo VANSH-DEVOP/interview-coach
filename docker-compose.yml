@@ -1,5 +1,27 @@
 name: interviewpilot
 
+# The API and the evaluation worker are the same image and the same
+# configuration, differing only in the command they run. Anchored so the two
+# cannot drift -- a worker pointed at a different database or a different Gemini
+# model would produce reports nobody could explain.
+x-backend-env: &backend-env
+  ENVIRONMENT: ${ENVIRONMENT:-local}
+  DEBUG: ${DEBUG:-true}
+  POSTGRES_HOST: db
+  POSTGRES_PORT: 5432
+  POSTGRES_USER: ${POSTGRES_USER:-interviewpilot}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-interviewpilot}
+  POSTGRES_DB: ${POSTGRES_DB:-interviewpilot}
+  JWT_SECRET_KEY: ${JWT_SECRET_KEY:-insecure-local-dev-key-override-me}
+  CORS_ORIGINS: '["http://localhost:3000"]'
+  REDIS_URL: redis://redis:6379
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
+  GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-models/gemini-embedding-001}
+  CHROMA_PATH: /var/lib/interviewpilot/chroma
+  STORAGE_BACKEND: local
+  STORAGE_LOCAL_PATH: /var/lib/interviewpilot/storage
+
 services:
   db:
     image: postgres:16-alpine
@@ -18,25 +40,23 @@ services:
     ports:
       - "5434:5432"
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Jobs are the only thing in here and the report row is the durable record,
+    # so an AOF/RDB volume would buy very little. Losing the queue costs at most
+    # the evaluations in flight, which resolve to a visible FAILED report.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build: ./backend
     restart: unless-stopped
-    environment:
-      ENVIRONMENT: ${ENVIRONMENT:-local}
-      DEBUG: ${DEBUG:-true}
-      POSTGRES_HOST: db
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: ${POSTGRES_USER:-interviewpilot}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-interviewpilot}
-      POSTGRES_DB: ${POSTGRES_DB:-interviewpilot}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-insecure-local-dev-key-override-me}
-      CORS_ORIGINS: '["http://localhost:3000"]'
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
-      GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-models/gemini-embedding-001}
-      CHROMA_PATH: /var/lib/interviewpilot/chroma
-      STORAGE_BACKEND: local
-      STORAGE_LOCAL_PATH: /var/lib/interviewpilot/storage
+    environment: *backend-env
     volumes:
       # Resume blobs live OUTSIDE the application code, on a named volume.
       - resume_storage:/var/lib/interviewpilot/storage
@@ -45,8 +65,26 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
       - "8000:8000"
+
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    # Same image, no HTTP server, no port. Overrides the image CMD to skip
+    # `alembic upgrade head` -- two processes racing the same migration on
+    # startup is a deadlock waiting to happen, and backend already runs it.
+    command: ["arq", "app.worker.WorkerSettings"]
+    environment: *backend-env
+    # No volumes: evaluation reads the transcript from Postgres and calls the
+    # provider. It touches neither the resume blobs nor the vector store.
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   frontend:
     build:

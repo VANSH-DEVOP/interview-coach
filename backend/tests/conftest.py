@@ -20,7 +20,7 @@ from app.core import rate_limit
 from app.core.config import get_settings
 from app.db.session import engine, get_session
 from app.main import app
-from app.services import evaluation_worker
+from app.services import evaluation_worker, job_queue
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
@@ -59,6 +59,14 @@ def _reset_rate_limits():
     rate_limit.reset()
     yield
     rate_limit.reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_queue_state():
+    """Same reasoning as the rate-limit counters, for the queue fallback count."""
+    job_queue.reset()
+    yield
+    job_queue.reset()
 
 
 # -- Database-backed fixtures --------------------------------------------------
@@ -185,11 +193,18 @@ async def api(db_session, db_connection, monkeypatch):
     assert on API behaviour, and neither a live provider (non-deterministic,
     20 requests/day) nor a shared counter belongs in that.
 
-    The background evaluation worker deliberately opens its *own* session,
-    since by the time it runs the request's session is closed. That would step
-    outside the test transaction and see none of the test's data, so its
-    session factory is pointed at the same connection here. Without this the
-    worker silently finds no session and every report stays PENDING.
+    The evaluation job deliberately opens its *own* session, since by the time
+    it runs the request's session is closed. That would step outside the test
+    transaction and see none of the test's data, so its session factory is
+    pointed at the same connection here. Without this the job silently finds no
+    session and every report stays PENDING.
+
+    There is no Redis here and the lifespan does not run under ASGITransport,
+    so `app.state.arq_pool` is absent and the queue takes its in-process branch.
+    That is what makes a completed interview observably reach COMPLETED inside
+    the request: BackgroundTasks run before ASGITransport returns. Tests that
+    care about the Redis branch inject a fake pool -- see
+    tests/test_job_queue.py.
     """
     settings = get_settings()
     monkeypatch.setattr(settings, "GEMINI_API_KEY", None)

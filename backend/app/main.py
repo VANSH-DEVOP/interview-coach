@@ -1,7 +1,10 @@
 """Application factory and wiring."""
 
+import logging
 from contextlib import asynccontextmanager
 
+from arq import create_pool
+from arq.connections import RedisSettings
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -13,15 +16,48 @@ from app.middleware.error_handler import register_exception_handlers
 from app.middleware.request_logging import RequestLoggingMiddleware
 from app.services.evaluation_worker import recover_stale_reports
 
+logger = logging.getLogger(__name__)
+
+
+async def _open_queue(app: FastAPI) -> None:
+    """Connect the arq pool, or leave the app on the in-process fallback.
+
+    A Redis that is configured but unreachable must not stop the API booting:
+    evaluations degrade to in-process (loudly, see job_queue.py) while every
+    other endpoint keeps working. Failing startup here would take the whole
+    product down over one background feature.
+    """
+    app.state.arq_pool = None
+    settings = get_settings()
+    if not settings.REDIS_URL:
+        logger.warning(
+            "REDIS_URL is not set; evaluations will run in-process and will not "
+            "survive a restart."
+        )
+        return
+
+    try:
+        app.state.arq_pool = await create_pool(RedisSettings.from_dsn(settings.REDIS_URL))
+        logger.info("Evaluation queue connected.")
+    except Exception:
+        logger.exception("Could not connect to Redis; evaluations will run in-process.")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
-    # Evaluations run as in-process background tasks, so a restart abandons any
-    # that were in flight. Left alone they would sit on GENERATING forever and
-    # the UI would spin indefinitely; FAILED is visible and re-evaluatable.
-    await recover_stale_reports()
+    await _open_queue(app)
+
+    # Only meaningful without a queue. With one, a PENDING or GENERATING report
+    # has a real job waiting in Redis, and failing those rows on boot would
+    # destroy live work -- every deploy would kill the evaluations in flight.
+    if app.state.arq_pool is None:
+        await recover_stale_reports()
+
     yield
+
+    if app.state.arq_pool is not None:
+        await app.state.arq_pool.aclose()
     await engine.dispose()
 
 

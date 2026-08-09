@@ -1,20 +1,22 @@
-"""Background evaluation of a completed interview.
+"""Evaluation of a completed interview, off the request path.
 
 Evaluation is a provider round-trip that can take many seconds, so it must not
 sit inside the request that ends the interview. `complete()` writes a PENDING
-report and hands off to `run_evaluation`, which walks the report through
-GENERATING to COMPLETED or FAILED while the client polls.
+report and hands the work off (see `app/services/job_queue.py`), which walks
+the report through GENERATING to COMPLETED or FAILED while the client polls.
 
 This module deliberately breaks the one-session-per-request rule that holds
 everywhere else: by the time it runs, the request's session is closed. It opens
-and commits its own, and it never raises -- an unhandled exception in a
-background task would vanish into the event loop, leaving the report stuck on
-GENERATING with nothing written anywhere.
+and commits its own.
 
-Today the handoff is FastAPI's BackgroundTasks, so the work is in-process and
-does not survive a restart. `recover_stale_reports` covers that on the way back
-up. Moving to a real queue means changing the two call sites in the router and
-nothing else -- the status machine and this function stay as they are.
+Two entry points, because the two runners want opposite things from a failure:
+
+- `evaluate` raises. The arq worker wants that -- a raised exception is what
+  triggers a retry with backoff, and only the final attempt should write FAILED.
+- `run_evaluation` never raises, and marks the report FAILED itself. The
+  in-process fallback wants that: an unhandled exception in a BackgroundTask
+  vanishes into the event loop, leaving the report stuck on GENERATING with
+  nothing written anywhere and nothing to retry it.
 """
 
 import logging
@@ -32,15 +34,18 @@ logger = logging.getLogger(__name__)
 
 
 async def run_evaluation(session_id: uuid.UUID, user_id: uuid.UUID) -> None:
-    """Evaluate a session's transcript and write the report. Never raises."""
+    """Evaluate and write the report, marking it FAILED on error. Never raises.
+
+    The single-attempt path, used when there is no queue behind the handoff.
+    """
     try:
-        await _evaluate(session_id, user_id)
+        await evaluate(session_id, user_id)
     except Exception:
         logger.exception("Evaluation failed for session %s.", session_id)
-        await _mark_failed(session_id)
+        await mark_failed(session_id)
 
 
-async def _evaluate(session_id: uuid.UUID, user_id: uuid.UUID) -> None:
+async def evaluate(session_id: uuid.UUID, user_id: uuid.UUID) -> None:
     async with AsyncSessionFactory() as db:
         interviews = InterviewRepository(db)
         reports = ReportRepository(db)
@@ -78,7 +83,7 @@ async def _evaluate(session_id: uuid.UUID, user_id: uuid.UUID) -> None:
         logger.info("Evaluation completed for session %s.", session_id)
 
 
-async def _mark_failed(session_id: uuid.UUID) -> None:
+async def mark_failed(session_id: uuid.UUID) -> None:
     """Record the failure on a fresh session; the previous one may be poisoned."""
     try:
         async with AsyncSessionFactory() as db:
@@ -97,9 +102,13 @@ async def _mark_failed(session_id: uuid.UUID) -> None:
 async def recover_stale_reports() -> int:
     """Flip reports left mid-flight by a restart to FAILED. Returns the count.
 
-    A GENERATING report has no worker behind it after a restart, so leaving it
-    alone means a spinner that never resolves. FAILED is visible and the user
-    can re-evaluate.
+    Only correct when the work was in-process: without a queue, a PENDING or
+    GENERATING report has nothing behind it after a restart, so leaving it alone
+    means a spinner that never resolves. FAILED is visible and re-evaluatable.
+
+    With Redis configured this must NOT run -- those rows have a real job
+    waiting in the queue, and failing them would destroy live work. The lifespan
+    in app/main.py gates the call accordingly.
     """
     try:
         async with AsyncSessionFactory() as db:
