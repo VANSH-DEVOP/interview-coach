@@ -36,4 +36,6 @@ class UserRead(BaseModel):
     email: EmailStr
     full_name: str
     is_active: bool
+    # Exposed so the UI can prompt, not to gate anything -- see User.email_verified_at.
+    email_verified: bool
     created_at: datetime

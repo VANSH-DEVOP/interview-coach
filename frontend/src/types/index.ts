@@ -5,6 +5,8 @@ export interface User {
   email: string;
   full_name: string;
   is_active: boolean;
+  /** Informational only — nothing in the app is gated on it. */
+  email_verified: boolean;
   created_at: string;
 }
 

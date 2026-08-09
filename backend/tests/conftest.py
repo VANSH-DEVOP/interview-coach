@@ -210,6 +210,10 @@ async def api(db_session, db_connection, monkeypatch):
     the request: BackgroundTasks run before ASGITransport returns. Tests that
     care about the Redis branch inject a fake pool -- see
     tests/test_job_queue.py.
+
+    Email goes to a recording sender, reachable as the `mailbox` fixture. Tests
+    that do not care never notice; the ones that do read the reset link straight
+    out of it, which is the same thing a developer does with the log backend.
     """
     settings = get_settings()
     monkeypatch.setattr(settings, "GEMINI_API_KEY", None)
@@ -228,6 +232,49 @@ async def api(db_session, db_connection, monkeypatch):
             yield ac
     finally:
         app.dependency_overrides.pop(get_session, None)
+
+
+@pytest.fixture
+def mailbox(db_session):
+    """Captures the emails the app would have sent.
+
+    Overrides the whole AccountService rather than just the sender, because the
+    sender is chosen inside a cached factory that the dependency calls directly.
+    Must be requested *before* `api` in a test's arguments only if the test
+    registers a user through the `registered_user` fixture and wants that
+    registration's email -- fixture setup order follows argument order.
+    """
+    from app.api.deps import get_account_service
+    from app.repositories.one_time_token_repository import OneTimeTokenRepository
+    from app.repositories.user_repository import UserRepository
+    from app.services.account_service import AccountService
+    from app.services.email.memory import RecordingEmailSender
+    from app.services.one_time_tokens import OneTimeTokenService
+
+    recorder = RecordingEmailSender()
+
+    def _override():
+        return AccountService(
+            UserRepository(db_session),
+            OneTimeTokenService(OneTimeTokenRepository(db_session)),
+            recorder,
+        )
+
+    app.dependency_overrides[get_account_service] = _override
+    try:
+        yield recorder
+    finally:
+        app.dependency_overrides.pop(get_account_service, None)
+
+
+def token_from(message) -> str:
+    """Pull the token out of an emailed link, the way a user clicking it would."""
+    from urllib.parse import parse_qs, urlparse
+
+    for word in message.body.split():
+        if "token=" in word:
+            return parse_qs(urlparse(word).query)["token"][0]
+    raise AssertionError(f"No token link in email body:\n{message.body}")
 
 
 @pytest.fixture

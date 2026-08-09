@@ -21,17 +21,21 @@ from app.core.security import decode_token
 from app.db.session import get_session
 from app.models.user import User
 from app.repositories.interview_repository import InterviewRepository
+from app.repositories.one_time_token_repository import OneTimeTokenRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.report_repository import ReportRepository
 from app.repositories.resume_repository import ResumeRepository
 from app.repositories.user_repository import UserRepository
+from app.services.account_service import AccountService
 from app.services.ai.base import get_question_generator
 from app.services.ai.embedding import EmbeddingService
 from app.services.ai.rag import RAGService
 from app.services.ai.vector_store import get_vector_store
 from app.services.auth_service import AuthService
+from app.services.email import get_email_sender
 from app.services.interview_service import InterviewService
 from app.services.job_queue import EvaluationQueue
+from app.services.one_time_tokens import OneTimeTokenService
 from app.services.report_service import ReportService
 from app.services.resume_service import ResumeService
 from app.services.storage import get_storage_service
@@ -63,6 +67,10 @@ def get_report_repository(session: DbSession) -> ReportRepository:
 
 def get_refresh_token_repository(session: DbSession) -> RefreshTokenRepository:
     return RefreshTokenRepository(session)
+
+
+def get_one_time_token_repository(session: DbSession) -> OneTimeTokenRepository:
+    return OneTimeTokenRepository(session)
 
 
 # -- AI Services ------------------------------------------------------------------
@@ -115,6 +123,22 @@ def get_user_service(
     users: Annotated[UserRepository, Depends(get_user_repository)],
 ) -> UserService:
     return UserService(users)
+
+
+def get_one_time_token_service(
+    tokens: Annotated[OneTimeTokenRepository, Depends(get_one_time_token_repository)],
+) -> OneTimeTokenService:
+    return OneTimeTokenService(tokens)
+
+
+def get_account_service(
+    users: Annotated[UserRepository, Depends(get_user_repository)],
+    tokens: Annotated[OneTimeTokenService, Depends(get_one_time_token_service)],
+) -> AccountService:
+    # The email backend is a process-wide singleton chosen by configuration,
+    # not a per-request object; tests override this dependency to inject a
+    # recording sender.
+    return AccountService(users, tokens, get_email_sender())
 
 
 def get_report_service(

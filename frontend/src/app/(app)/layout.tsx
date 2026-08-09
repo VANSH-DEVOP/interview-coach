@@ -3,6 +3,7 @@
 import { useAuth } from "@/hooks/use-auth";
 import { Sidebar } from "@/components/layout/sidebar";
 import { MobileNav } from "@/components/layout/mobile-nav";
+import { VerifyEmailBanner } from "@/components/shared/verify-email-banner";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { logout } = useAuth();
@@ -19,7 +20,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <div className="flex flex-1 flex-col">
         <MobileNav onLogout={handleLogout} />
         <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8">
-          <div className="mx-auto w-full max-w-5xl space-y-6">{children}</div>
+          <div className="mx-auto w-full max-w-5xl space-y-6">
+            <VerifyEmailBanner />
+            {children}
+          </div>
         </main>
       </div>
     </div>
