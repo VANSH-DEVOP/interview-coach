@@ -13,6 +13,16 @@ class ResumeRepository(BaseRepository[Resume]):
         stmt = select(Resume).where(Resume.id == resume_id, Resume.user_id == user_id)
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
+    async def all_for_user(self, user_id: uuid.UUID) -> list[Resume]:
+        """Every resume, unpaginated. For account deletion.
+
+        Deliberately not the paginated method: deleting a page at a time would
+        leave blobs and vector-store entries behind for anyone with more
+        resumes than the page size.
+        """
+        stmt = select(Resume).where(Resume.user_id == user_id)
+        return list((await self.session.execute(stmt)).scalars().all())
+
     async def list_for_user(
         self, user_id: uuid.UUID, *, offset: int, limit: int
     ) -> tuple[list[Resume], int]:

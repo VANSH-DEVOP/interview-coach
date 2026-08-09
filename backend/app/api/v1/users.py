@@ -1,10 +1,16 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response, status
 
-from app.api.deps import CurrentUser, get_auth_service, get_user_service, limit_by_user
+from app.api.deps import (
+    CurrentUser,
+    get_account_deletion_service,
+    get_auth_service,
+    get_user_service,
+    limit_by_user,
+)
 from app.schemas.auth import TokenPair
-from app.schemas.user import PasswordChange, UserRead, UserUpdate
+from app.schemas.user import AccountDelete, PasswordChange, UserRead, UserUpdate
 from app.services.auth_service import AuthService
 from app.services.user_service import UserService
 
@@ -53,3 +59,30 @@ async def change_password(
     )
     await auth.revoke_all(current_user.id)
     return await auth.issue_for(current_user.id)
+
+
+@router.delete(
+    "/me",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(limit_by_user("auth"))],
+)
+async def delete_me(
+    payload: AccountDelete,
+    current_user: CurrentUser,
+    users: Annotated[UserService, Depends(get_account_deletion_service)],
+) -> Response:
+    """Delete the account and everything in it. Irreversible.
+
+    DELETE with a body, which is unusual but correct here: the password is a
+    credential and has no business in a query string, where it would land in
+    access logs and browser history. Clients that cannot send a body on DELETE
+    are not a constraint this API has.
+
+    Requires the password because an access token borrowed from an unattended
+    machine should not be able to destroy someone's account.
+
+    Sessions are not revoked explicitly -- the refresh tokens cascade away with
+    the user row, which is the same outcome by a shorter route.
+    """
+    await users.delete_account(current_user, payload.password)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -2,7 +2,9 @@
 
 import { useState, type FormEvent } from "react";
 
-import { api, ApiError, setTokens } from "@/lib/api-client";
+import { useRouter } from "next/navigation";
+
+import { api, ApiError, clearTokens, setTokens } from "@/lib/api-client";
 import { useAuth } from "@/hooks/use-auth";
 import type { TokenPair, User } from "@/types";
 import { PageHeader } from "@/components/shared/page-header";
@@ -20,6 +22,9 @@ export default function ProfilePage() {
     text: string;
   } | null>(null);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const router = useRouter();
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -77,6 +82,35 @@ export default function ProfilePage() {
       });
     } finally {
       setIsChangingPassword(false);
+    }
+  }
+
+  async function handleDelete(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setDeleteError(null);
+
+    const password = String(new FormData(event.currentTarget).get("delete_password"));
+    if (
+      !window.confirm(
+        "This permanently deletes your account, your resumes and every interview " +
+          "and report. It cannot be undone. Continue?"
+      )
+    ) {
+      return;
+    }
+
+    setIsDeleting(true);
+    try {
+      await api.delete("/users/me", { password });
+      // Straight to the login page rather than through logout: the refresh
+      // token has already gone with the account, so there is nothing to revoke.
+      clearTokens();
+      router.push("/login");
+    } catch (err) {
+      setDeleteError(
+        err instanceof ApiError ? err.message : "Unable to delete your account."
+      );
+      setIsDeleting(false);
     }
   }
 
@@ -184,6 +218,40 @@ export default function ProfilePage() {
 
             <Button type="submit" disabled={isChangingPassword}>
               {isChangingPassword ? "Changing..." : "Change password"}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+
+      <Card className="border-destructive/40">
+        <CardHeader>
+          <CardTitle className="text-base text-destructive">Delete account</CardTitle>
+          <CardDescription>
+            Permanently removes your account, your resumes, and every interview and report.
+            This cannot be undone.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleDelete} className="max-w-md space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="delete_password">Confirm your password</Label>
+              <Input
+                id="delete_password"
+                name="delete_password"
+                type="password"
+                autoComplete="current-password"
+                required
+              />
+            </div>
+
+            {deleteError && (
+              <p role="alert" className="text-sm text-destructive">
+                {deleteError}
+              </p>
+            )}
+
+            <Button type="submit" variant="destructive" disabled={isDeleting}>
+              {isDeleting ? "Deleting..." : "Delete my account"}
             </Button>
           </form>
         </CardContent>

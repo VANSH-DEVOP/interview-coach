@@ -125,6 +125,21 @@ def get_user_service(
     return UserService(users)
 
 
+def get_account_deletion_service(
+    users: Annotated[UserRepository, Depends(get_user_repository)],
+    resumes: Annotated[ResumeRepository, Depends(get_resume_repository)],
+) -> UserService:
+    """The same service, wired for deletion.
+
+    Separate from `get_user_service` on purpose. Deletion is the only operation
+    that touches the blob store and the vector index, and folding them into the
+    common dependency would make every /users route construct a storage backend
+    -- so reading your own profile would fail if object storage were
+    misconfigured or its credentials had expired.
+    """
+    return UserService(users, resumes, get_storage_service(), get_rag_service())
+
+
 def get_one_time_token_service(
     tokens: Annotated[OneTimeTokenRepository, Depends(get_one_time_token_repository)],
 ) -> OneTimeTokenService:

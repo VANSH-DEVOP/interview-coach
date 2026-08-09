@@ -235,6 +235,27 @@ async def api(db_session, db_connection, monkeypatch):
 
 
 @pytest.fixture
+def storage_root(tmp_path, monkeypatch):
+    """Point blob storage at a temp directory so tests leave nothing behind.
+
+    get_storage_service is lru_cached and reads STORAGE_LOCAL_PATH at
+    construction, so patching the setting alone is not enough -- the cache has
+    to be cleared on both sides. Without the second clear, a later test would
+    reuse a service rooted at a tmp_path pytest has already deleted.
+
+    Needed by any test whose route constructs storage, which since account
+    deletion is no longer only the resume routes: the default root lives under
+    /var/lib and is not writable by a developer's user.
+    """
+    from app.services.storage import get_storage_service
+
+    monkeypatch.setattr(get_settings(), "STORAGE_LOCAL_PATH", tmp_path)
+    get_storage_service.cache_clear()
+    yield tmp_path
+    get_storage_service.cache_clear()
+
+
+@pytest.fixture
 def mailbox(db_session):
     """Captures the emails the app would have sent.
 

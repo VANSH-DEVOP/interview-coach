@@ -19,24 +19,6 @@ def _pdf_bytes() -> bytes:
 
 
 @pytest.fixture
-def storage_root(tmp_path, monkeypatch):
-    """Point blob storage at a temp directory so tests leave nothing behind.
-
-    get_storage_service is lru_cached and reads STORAGE_LOCAL_PATH at
-    construction, so patching the setting alone is not enough -- the cache has
-    to be cleared on both sides. Without the second clear, a later test would
-    reuse a service rooted at a tmp_path pytest has already deleted.
-    """
-    from app.core.config import get_settings
-    from app.services.storage import get_storage_service
-
-    monkeypatch.setattr(get_settings(), "STORAGE_LOCAL_PATH", tmp_path)
-    get_storage_service.cache_clear()
-    yield tmp_path
-    get_storage_service.cache_clear()
-
-
-@pytest.fixture
 async def other_user(api):
     email = f"other-{uuid.uuid4().hex[:8]}@example.com"
     password = "correct-horse-battery"
