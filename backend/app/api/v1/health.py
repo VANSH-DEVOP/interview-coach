@@ -44,12 +44,31 @@ class QueueHealth(BaseModel):
     last_at: str | None = None
 
 
+class WorkerHealthResponse(BaseModel):
+    """Whether anything is *consuming* the queue.
+
+    `queue.connected` only says the API can reach Redis. A worker that has died
+    leaves the API accepting interviews normally while every report sits on
+    PENDING -- nothing is lost, the queue drains when it comes back, and without
+    this block nothing anywhere says so.
+
+    `expected` is false when no queue is configured, where in-process evaluation
+    is the intended design rather than a fault. `alive` is null when the
+    question could not be asked at all.
+    """
+
+    expected: bool
+    alive: bool | None = None
+    detail: str | None = None
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     environment: str
     database: Literal["up", "down"]
     ai: AiHealth
     queue: QueueHealth
+    worker: WorkerHealthResponse
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -62,13 +81,28 @@ async def health(
         database: Literal["up", "down"] = "up"
     except Exception:
         database = "down"
+
+    pool = getattr(request.app.state, "arq_pool", None)
+    worker = await job_queue.worker_health(pool)
+    # Expected only when the queue is actually in use. Without a pool the
+    # evaluations run in this process by design, and there is no worker to miss.
+    worker_expected = pool is not None
+
     # AI degradation does not flip `status`: the app is still serving correct
     # responses, and a single historical 429 should not fail a liveness probe.
     # It is reported for monitoring, not for orchestration.
+    #
+    # A missing worker does flip it. Unlike a fallback, nothing downstream
+    # covers for it: reports queue up and stay PENDING until someone notices,
+    # and "someone notices" is exactly what this field is for.
+    degraded = database == "down" or (worker_expected and worker.alive is False)
     return HealthResponse(
-        status="ok" if database == "up" else "degraded",
+        status="degraded" if degraded else "ok",
         environment=settings.ENVIRONMENT,
         database=database,
+        worker=WorkerHealthResponse(
+            expected=worker_expected, alive=worker.alive, detail=worker.detail
+        ),
         ai=AiHealth.model_validate(
             {"configured": bool(settings.GEMINI_API_KEY), **degradation.snapshot()}
         ),

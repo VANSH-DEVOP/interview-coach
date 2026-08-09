@@ -107,3 +107,57 @@ async def test_enqueue_never_raises(ids):
 def test_is_durable_reports_which_branch_is_live():
     assert EvaluationQueue(FakePool(), FakeBackgroundTasks()).is_durable is True
     assert EvaluationQueue(None, FakeBackgroundTasks()).is_durable is False
+
+
+# -- Worker liveness -----------------------------------------------------------
+
+
+class FakeHealthPool:
+    """A pool that only answers GETs, which is all the heartbeat read needs."""
+
+    def __init__(self, value: bytes | None = None, error: Exception | None = None) -> None:
+        self.value = value
+        self.error = error
+        self.keys: list[str] = []
+
+    async def get(self, key: str):
+        self.keys.append(key)
+        if self.error is not None:
+            raise self.error
+        return self.value
+
+
+async def test_a_present_heartbeat_means_a_live_worker():
+    pool = FakeHealthPool(b"Aug-09 20:35:00 j_complete=1 queued=0")
+
+    health = await job_queue.worker_health(pool)
+
+    assert health.alive is True
+    assert health.detail == "Aug-09 20:35:00 j_complete=1 queued=0"
+    # The key arq actually writes, built from arq's constants rather than a
+    # string of our own that could drift out of agreement with it.
+    assert pool.keys == ["arq:queue:health-check"]
+
+
+async def test_a_missing_heartbeat_means_a_dead_worker():
+    """arq deletes the key on a clean shutdown and gives it a TTL otherwise, so
+    absence is the signal -- no clock of ours is involved."""
+    health = await job_queue.worker_health(FakeHealthPool(value=None))
+
+    assert health.alive is False
+
+
+async def test_an_unreachable_redis_is_unknown_rather_than_dead():
+    health = await job_queue.worker_health(
+        FakeHealthPool(error=ConnectionError("connection refused"))
+    )
+
+    assert health.alive is None
+
+
+async def test_no_pool_means_the_question_was_never_asked():
+    """Without a queue the evaluations run in-process by design."""
+    health = await job_queue.worker_health(None)
+
+    assert health.alive is None
+    assert health.detail is None

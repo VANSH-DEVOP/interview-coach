@@ -105,6 +105,21 @@ Reports orphaned by a restart are recovered on two different paths, and they mus
 
 The arq function name is matched as a *string* (`EVALUATE_SESSION` in `job_queue.py` vs the callable in `worker.py`). Renaming one side alone gives jobs that enqueue cleanly and never run — `tests/test_worker.py` guards it.
 
+### Scheduled work
+
+`WorkerSettings.cron_jobs` is where anything periodic goes — it is the only process already running on a clock. Two jobs today:
+
+- `reconcile_reports` — every 10 minutes and at startup (above).
+- `prune_tokens` — hourly at `:07`, deliberately off the reconciliation tick. `refresh_tokens` gains a row per login and rotation, `one_time_tokens` one per reset/verification email, and nothing in the request path can clean them up. `app/services/token_pruning.py` deletes only *expired* rows: a revoked-but-unexpired refresh token is what makes logout work, and a consumed one-time token is what makes a replayed reset link fail, so neither may be deleted early.
+
+Both swallow their exceptions and return counts — a cron job that raises stops until the worker restarts, and neither task is urgent enough to be worth that.
+
+### Worker liveness
+
+The worker writes a heartbeat to Redis every `HEALTH_CHECK_INTERVAL_SECONDS` (30; arq's default is an hour, useless for this) with a TTL just past it, and deletes it on clean shutdown — so *presence of the key is the whole signal* and nothing needs a clock. Read two ways: `GET /health`'s `worker` block (`job_queue.worker_health`), and the `worker` container's own healthcheck, `arq --check app.worker.WorkerSettings`.
+
+A missing worker flips `/health` `status` to `degraded`, unlike an AI or queue fallback. Nothing downstream covers for it: the API keeps accepting interviews and every report sits `PENDING` until a human notices. `alive` is `null`, not `false`, when the heartbeat could not be read at all (no pool, Redis unreachable) — that is already reported as a queue fallback, and the worker may be perfectly fine.
+
 ## Storage
 
 `app/services/storage/` mirrors the same pattern: `StorageService` ABC, `LocalStorageService` impl, `get_storage_service()` factory keyed on `STORAGE_BACKEND`. Blobs live outside the code tree (`STORAGE_LOCAL_PATH`, a named Docker volume). Uploads use opaque keys `resumes/{user_id}/{uuid}.pdf`; the client filename is metadata only. Swapping to S3/R2 should touch this package only.

@@ -80,6 +80,16 @@ services:
     # startup is a deadlock waiting to happen, and backend already runs it.
     command: ["arq", "app.worker.WorkerSettings"]
     environment: *backend-env
+    # `arq --check` exits non-zero when the heartbeat key is missing from Redis,
+    # which is the same signal /health reports. Without it a dead worker is
+    # invisible: the API keeps taking interviews and every report sits PENDING.
+    # start_period covers the first write, one health_check_interval in.
+    healthcheck:
+      test: ["CMD", "arq", "--check", "app.worker.WorkerSettings"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
     # No volumes: evaluation reads the transcript from Postgres and calls the
     # provider. It touches neither the resume blobs nor the vector store.
     depends_on:

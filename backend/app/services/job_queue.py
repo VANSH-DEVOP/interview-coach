@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from arq.connections import ArqRedis
+from arq.constants import default_queue_name, health_check_key_suffix
 from fastapi import BackgroundTasks
 
 from app.services.evaluation_worker import run_evaluation
@@ -73,6 +74,54 @@ def reset() -> None:
     """Clear the recorded state. For tests."""
     global _state
     _state = _State()
+
+
+# Where arq's worker writes its heartbeat. Composed from arq's own constants so
+# a change to either side does not leave the API reading a key nobody writes.
+WORKER_HEALTH_KEY = default_queue_name + health_check_key_suffix
+
+
+@dataclass(frozen=True)
+class WorkerHealth:
+    """Whether anything is consuming the queue.
+
+    Distinct from the pool being connected, which only says the *API* can reach
+    Redis. With no worker the API keeps accepting interviews and every report
+    sits on PENDING: nothing is lost, the queue drains when a worker returns,
+    and nothing anywhere says so. That silence is the failure this reports.
+
+    `alive` is None when the question could not be asked -- no pool, or Redis
+    unreachable -- which is not the same as a dead worker and must not be shown
+    as one.
+    """
+
+    alive: bool | None = None
+    detail: str | None = None
+
+
+async def worker_health(pool: ArqRedis | None) -> WorkerHealth:
+    """Read the worker's heartbeat out of Redis.
+
+    arq refreshes the key every `health_check_interval` seconds with a TTL just
+    past that, and deletes it on a clean shutdown. So its presence means a
+    worker was alive within the last interval, and this needs no clock of its
+    own -- Redis expiring the key *is* the timeout.
+    """
+    if pool is None:
+        return WorkerHealth()
+    try:
+        heartbeat = await pool.get(WORKER_HEALTH_KEY)
+    except Exception as exc:  # noqa: BLE001 - health must not raise
+        logger.warning("Could not read the worker heartbeat: %s", exc)
+        return WorkerHealth()
+
+    if heartbeat is None:
+        return WorkerHealth(alive=False)
+    # arq's own summary string (jobs complete/failed/retried/ongoing, queue
+    # depth). Passed through unparsed: it is a human-readable debugging aid
+    # whose format belongs to arq, and parsing it would break on an upgrade for
+    # no gain.
+    return WorkerHealth(alive=True, detail=heartbeat.decode(errors="replace"))
 
 
 class EvaluationQueue:

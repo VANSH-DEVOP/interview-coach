@@ -23,11 +23,12 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from sqlalchemy import select, update
 
 from app.core.config import get_settings
+from app.core.time import utcnow
 from app.db.session import AsyncSessionFactory
 from app.models.evaluation_report import EvaluationReport, ReportStatus
 from app.models.interview_session import InterviewSession
@@ -38,11 +39,6 @@ from app.services.ai.evaluator import QAPair, get_evaluator
 from app.services.ai.masking import redactor_for
 
 logger = logging.getLogger(__name__)
-
-
-def _utcnow() -> datetime:
-    """Naive UTC, matching the TIMESTAMP WITHOUT TIME ZONE columns."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 async def run_evaluation(session_id: uuid.UUID, user_id: uuid.UUID) -> None:
@@ -204,7 +200,7 @@ async def reconcile_stale_reports(enqueue: Enqueue) -> Reconciliation:
     re-queued on every sweep for the rest of time.
     """
     settings = get_settings()
-    now = _utcnow()
+    now = utcnow()
     stale_before = now - timedelta(seconds=settings.EVALUATION_STALE_AFTER_SECONDS)
     give_up_before = now - timedelta(seconds=settings.EVALUATION_STALE_GIVE_UP_SECONDS)
 

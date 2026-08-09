@@ -20,7 +20,7 @@ from app.core import rate_limit
 from app.core.config import get_settings
 from app.db.session import engine, get_session
 from app.main import app
-from app.services import evaluation_worker, job_queue
+from app.services import evaluation_worker, job_queue, token_pruning
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
@@ -218,9 +218,13 @@ async def api(db_session, db_connection, monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "GEMINI_API_KEY", None)
     monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", False)
-    monkeypatch.setattr(
-        evaluation_worker, "AsyncSessionFactory", lambda: _bind_session(db_connection)
-    )
+    # Every module that opens its own session -- the ones that run outside a
+    # request -- has to be pointed at the test connection, or it works against
+    # the *real* database: invisible to the test, and durable.
+    for module in (evaluation_worker, token_pruning):
+        monkeypatch.setattr(
+            module, "AsyncSessionFactory", lambda: _bind_session(db_connection)
+        )
 
     async def _override_session():
         yield db_session

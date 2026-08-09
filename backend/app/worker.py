@@ -10,9 +10,11 @@ evaluation is raised, not swallowed, so arq re-queues it with backoff. Only the
 final attempt writes FAILED -- marking it earlier would show the user a dead
 report while a retry was still pending.
 
-The worker also owns the cron that reconciles orphaned reports. arq's retries
-cover a job that fails; nothing covers a job that ceases to exist, which is what
-a Redis restart does to the whole queue.
+The worker also owns the scheduled maintenance this system has -- reconciling
+orphaned reports, and pruning expired tokens. Both are periodic work with no
+request to hang off, and this is the only process already running on a clock.
+arq's retries cover a job that fails; nothing covers a job that ceases to exist,
+which is what a Redis restart does to the whole queue.
 """
 
 import logging
@@ -27,6 +29,7 @@ from app.core.logging import configure_logging
 from app.db.session import engine
 from app.services.evaluation_worker import evaluate, mark_failed, reconcile_stale_reports
 from app.services.job_queue import EVALUATE_SESSION
+from app.services.token_pruning import prune_expired_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,18 @@ logger = logging.getLogger(__name__)
 # experiences is this plus EVALUATION_STALE_AFTER_SECONDS, so there is no point
 # sweeping much more often than the staleness threshold changes anything.
 RECONCILE_EVERY_MINUTES = 10
+
+# Which minute past the hour to prune tokens. Deliberately not a multiple of
+# RECONCILE_EVERY_MINUTES: the two jobs both open database sessions, and there
+# is no reason to have them land on the same tick every hour.
+PRUNE_TOKENS_AT_MINUTE = 7
+
+# How often the worker writes its heartbeat to Redis, and therefore how quickly
+# `/health` notices a worker that has died. arq gives the key a TTL of this plus
+# a second, so a stopped worker disappears on its own; the API reads it via
+# app/services/job_queue.py. arq's own default is an hour, which is far too
+# coarse for "is anything draining the queue right now".
+HEALTH_CHECK_INTERVAL_SECONDS = 30
 
 
 async def evaluate_session(ctx: dict[str, Any], session_id: str, user_id: str) -> None:
@@ -79,6 +94,13 @@ async def reconcile_reports(ctx: dict[str, Any]) -> None:
     outcome = await reconcile_stale_reports(_enqueue)
     if not outcome:
         logger.debug("Reconciliation swept: nothing orphaned.")
+
+
+async def prune_tokens(ctx: dict[str, Any]) -> None:
+    """Delete expired refresh and one-time tokens. Registered as a cron job."""
+    pruned = await prune_expired_tokens()
+    if not pruned:
+        logger.debug("Token prune: nothing expired.")
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -134,13 +156,28 @@ class WorkerSettings:
             # One tick, no retries. A failure inside the sweep is already
             # swallowed and logged, and the next tick is the retry.
             max_tries=1,
-        )
+        ),
+        cron(
+            prune_tokens,
+            minute=PRUNE_TOKENS_AT_MINUTE,
+            second=0,
+            # Nothing is broken while expired rows sit there, so there is no
+            # reason to pay for a scan on every worker start -- unlike the
+            # reconciliation above, where a restart is exactly the moment to
+            # look.
+            run_at_startup=False,
+            unique=True,
+            max_tries=1,
+        ),
     ]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = _redis_settings()
     max_tries = get_settings().EVALUATION_MAX_TRIES
     job_timeout = get_settings().EVALUATION_JOB_TIMEOUT_SECONDS
+    # The heartbeat /health reads, and what `arq --check` (the container's
+    # health check) exits non-zero on.
+    health_check_interval = HEALTH_CHECK_INTERVAL_SECONDS
     # Keep finished jobs briefly so a failure is inspectable in Redis; the
     # report row is the durable record, so there is no reason to keep them long.
     keep_result = 3600

@@ -13,6 +13,7 @@ import pytest
 from app import worker
 from app.core.config import get_settings
 from app.services.evaluation_worker import Reconciliation
+from app.services.token_pruning import Pruned
 
 
 @pytest.fixture
@@ -138,17 +139,59 @@ async def test_the_cron_enqueues_under_the_name_the_worker_consumes(monkeypatch)
     assert pool.jobs == [(EVALUATE_SESSION, str(session_id), str(user_id))]
 
 
-def test_the_reconciliation_cron_is_registered():
-    """A cron that is written but never listed does nothing at all, silently."""
-    jobs = worker.WorkerSettings.cron_jobs
+def _cron(name: str):
+    return next(j for j in worker.WorkerSettings.cron_jobs if j.name == f"cron:{name}")
 
-    assert [job.name for job in jobs] == ["cron:reconcile_reports"]
-    sweep = jobs[0]
-    # One replica per tick; several sweeping at once would queue each orphan
-    # once per replica.
-    assert sweep.unique is True
+
+def test_both_crons_are_registered():
+    """A cron that is written but never listed does nothing at all, silently."""
+    assert {job.name for job in worker.WorkerSettings.cron_jobs} == {
+        "cron:reconcile_reports",
+        "cron:prune_tokens",
+    }
+    # One replica per tick for both; several running at once would queue each
+    # orphan once per replica, and have two transactions deleting one set of rows.
+    assert all(job.unique for job in worker.WorkerSettings.cron_jobs)
+
+
+def test_the_reconciliation_cron_runs_often_and_at_startup():
+    sweep = _cron("reconcile_reports")
+
     assert sweep.run_at_startup is True
     assert sweep.minute == set(range(0, 60, worker.RECONCILE_EVERY_MINUTES))
+
+
+def test_the_prune_cron_runs_hourly_off_the_reconciliation_tick():
+    prune = _cron("prune_tokens")
+
+    # Hourly: no hour constraint, one minute.
+    assert prune.hour is None
+    assert prune.minute == worker.PRUNE_TOKENS_AT_MINUTE
+    # Nothing is broken while expired rows sit there, so a restart need not scan.
+    assert prune.run_at_startup is False
+    # Off the reconciliation schedule on purpose: both open database sessions.
+    assert worker.PRUNE_TOKENS_AT_MINUTE % worker.RECONCILE_EVERY_MINUTES != 0
+
+
+async def test_the_prune_cron_calls_the_pruner(monkeypatch):
+    called: list[bool] = []
+
+    async def fake_prune():
+        called.append(True)
+        return Pruned(refresh_tokens=2, one_time_tokens=1)
+
+    monkeypatch.setattr(worker, "prune_expired_tokens", fake_prune)
+
+    await worker.prune_tokens({})
+
+    assert called == [True]
+
+
+def test_the_worker_heartbeats_often_enough_to_notice_a_death():
+    """arq's default is an hour, which cannot answer "is anything draining the
+    queue right now". /health and `arq --check` both read this key."""
+    assert worker.WorkerSettings.health_check_interval == worker.HEALTH_CHECK_INTERVAL_SECONDS
+    assert worker.HEALTH_CHECK_INTERVAL_SECONDS <= 60
 
 
 def test_the_sweep_interval_leaves_room_for_a_full_retry_cycle():

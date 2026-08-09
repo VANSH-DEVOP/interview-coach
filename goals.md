@@ -264,22 +264,44 @@ The same cron is now the obvious home for the expired-token pruning below.
   alternative is reset links in the logs — but it means the first production
   boot needs the SMTP settings ready, and a verified sender domain if the
   provider requires one.
-- **Nothing prunes expired tokens.** `refresh_tokens` grows a row per login and
-  `one_time_tokens` one per reset or verification email. Both repositories have
-  a `delete_expired()`; nothing calls it. The worker now has a `cron_jobs` list
-  (`app/worker.py`), so this is a second entry beside `reconcile_reports`
-  rather than any new machinery.
+- ~~**Nothing prunes expired tokens.**~~ ✅ 2026-08-09 — `prune_tokens` cron,
+  hourly at `:07`. See below.
 - **Rate-limit defaults sit above the account ceiling** (20/user/hour vs 20/day
   for the whole free-tier account). Lower them, or move off the free tier.
 - **Move rate-limit counters to Redis** before running more than one API replica
   — they are per-process today, so N replicas means N× the intended ceiling.
   Redis is now in the stack, so this is a small change rather than a new
   dependency.
-- **The `worker` service is not covered by a health check or a restart alarm.**
-  If it dies, the API keeps accepting interviews and every report sits on
-  `PENDING` — the queue drains when it returns, so nothing is lost, but nothing
-  says so either. `/health` reports the *API's* view of Redis, not whether
-  anything is consuming.
+- ~~**The `worker` service is not covered by a health check.**~~ ✅ 2026-08-09 —
+  `/health` has a `worker` block and the container has an `arq --check`
+  healthcheck. See below. Still no *restart alarm*: an unhealthy container is
+  visible in `docker compose ps` and nothing pages anyone, which needs the
+  error-reporting item in Phase 3 rather than more code here.
+
+### Token pruning + worker liveness — ✅ COMPLETE (2026-08-09)
+Both hang off the `cron_jobs` list the reconciliation sweep introduced.
+
+**Pruning** (`app/services/token_pruning.py`, hourly at `:07`, off the
+reconciliation tick since both open database sessions). The deletions were
+never the risk — the rows that must *survive* are. A revoked-but-unexpired
+refresh token is the thing that makes logout mean anything, and a consumed
+one-time token is what makes a replayed reset link fail rather than mint a
+second password change. Both repositories' `delete_expired()` were already
+correct on that point; the tests now pin it, because a slightly over-eager
+prune would silently undo two security controls and break no visible feature.
+
+**Liveness.** The worker heartbeats to Redis every 30s (arq's default is an
+hour, which cannot answer "is anything draining the queue right now"), with a
+TTL just past that, deleted on clean shutdown — so the key's presence is the
+entire signal and nothing needs a clock of its own. Read by `/health`'s new
+`worker` block and by the container healthcheck, `arq --check`.
+
+A dead worker flips `/health` to `degraded`, unlike AI or queue fallbacks,
+which deliberately do not. Nothing downstream covers for it: the API keeps
+accepting interviews and every report sits `PENDING`. When the heartbeat cannot
+be *read* at all, `alive` is null rather than false — Redis being unreachable
+is already reported as a queue fallback, and calling the worker dead on top of
+that is a second alarm for one fault, and probably a wrong one.
 
 ### Why testing came before the rest of Phase 1
 Three genuine bugs were invisible to the test suite and only surfaced by driving
