@@ -42,6 +42,7 @@ class _FakeSession:
         self.questions: dict[uuid.UUID, Question] = {}
         self.answers: list[Answer] = []
         self.reports: list[EvaluationReport] = []
+        self.commits = 0
 
     def add(self, entity) -> None:
         if isinstance(entity, Question):
@@ -65,6 +66,12 @@ class _FakeSession:
 
     async def flush(self) -> None:
         return None
+
+    async def commit(self) -> None:
+        # complete() and reevaluate() commit rather than flush, because the
+        # evaluation runs on a different session and a flush would be invisible
+        # to it. Nothing here is durable, so recording the call is enough.
+        self.commits += 1
 
     async def refresh(self, entity) -> None:
         return None

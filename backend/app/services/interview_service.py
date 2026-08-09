@@ -322,12 +322,19 @@ class InterviewService:
 
         # A PENDING report, not a finished one: evaluation is a provider
         # round-trip and must not block the request that ends the interview.
-        # The router hands the work to app.services.evaluation_worker and the
+        # The router hands the work off (app/services/job_queue.py) and the
         # client polls the report until it leaves PENDING/GENERATING.
         self.interviews.session.add(
             EvaluationReport(session_id=session.id, status=ReportStatus.PENDING)
         )
-        await self.interviews.session.flush()
+        # Commit, not flush. The evaluation runs on a *different* database
+        # session -- another process entirely, with a queue -- and a flush is
+        # invisible outside this transaction. The router hands off the moment
+        # this returns, so anything less than a commit is a runner that looks up
+        # the session, finds nothing, and quietly gives up with the report left
+        # on PENDING forever. Committing here is deliberate: `get_session` would
+        # otherwise commit only after the handoff.
+        await self.interviews.session.commit()
         return session
 
     async def reevaluate(
@@ -365,4 +372,7 @@ class InterviewService:
         report.detailed_feedback = None
         await self.interviews.session.flush()
         await self.interviews.session.refresh(report)
+        # Same reasoning as complete(): the runner is on another session, so the
+        # reset has to be committed before the router hands the work off.
+        await self.interviews.session.commit()
         return report
