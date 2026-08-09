@@ -25,7 +25,11 @@ Scaffolding exists; the feature does not.
 - [x] **Follow-ups have no resume context.** `interview_service.py:136` calls `follow_up(..., resume_text=None)` and never consults RAG. Pass the session's resume text and add a RAG retrieval keyed on the answer.
   → **Done** (`e1a985f`). `follow_up` seam widened with `resume_id`; retrieval is keyed on question+answer, not the role. Also fixed a latent `MissingGreenlet` crash in the follow-up branch (`session.questions` lazy-loaded on a session fetched without them) — never fired only because the model was 404ing. Replaced with `InterviewRepository.next_sequence_number`.
 - [x] **Async evaluation.** (`7d87731`) `complete()` writes a PENDING report and returns; `app/services/evaluation_worker.py` runs it through GENERATING → COMPLETED/FAILED on its own session, never raising. `recover_stale_reports()` on startup flips work abandoned by a restart to FAILED so the UI shows a retry rather than an endless spinner. Frontend polls every 2s and stops once settled.
-  - [ ] **Follow-up:** BackgroundTasks is in-process. A real queue (arq/celery) would survive restarts; the status machine and worker function would not change, only the two call sites in the router.
+  - [ ] **Follow-up — durable queue (Redis + arq). Decided 2026-08-09, not yet implemented.**
+    **Problem:** `BackgroundTasks` schedules an `asyncio` task inside the web-server process. Nothing records that the job exists except the report row sitting at `PENDING`/`GENERATING`, so a restart mid-evaluation — a deploy, a container reschedule, an OOM kill — drops the work silently. `recover_stale_reports()` limits the damage by flipping orphaned rows to `FAILED` at startup (a visible retry rather than an endless spinner), but the user's evaluation is genuinely lost and they have to notice and re-run it. Frequency scales with deploy rate, not usage.
+    **Chosen approach:** Redis + `arq` — Redis-backed, async-native, matches the existing async stack. Rejected the Postgres-only alternative (have `recover_stale_reports()` re-run the work instead of failing it), which needs no new infrastructure but has no retry/backoff, no protection if the new process also dies, and needs an atomic `UPDATE ... RETURNING` claim to be safe across replicas — all of which arq gives for free.
+    **Shape of the work:** `arq` dependency + `REDIS_URL` setting → `redis` service and a **new long-running `worker` service** in `docker-compose.yml` (the app has no such process today; same image, different command) → `app/worker.py` with `WorkerSettings` → redis pool created in the FastAPI lifespan, exposed via a `deps.py` dependency → the two `background.add_task(...)` call sites in `app/api/v1/interviews.py` (`complete_interview`, `reevaluate_interview`) become `enqueue_job` → `recover_stale_reports()` moves to worker startup and may become unnecessary entirely → `redis` service added to the CI workflow → test fixtures reworked, since the `api` fixture currently relies on `BackgroundTasks` running synchronously under `ASGITransport` to observe the report reaching `COMPLETED`.
+    **Why it's cheap to swap:** `run_evaluation(session_id, user_id)` takes no request-scoped state, so the status machine and the worker function itself are unchanged.
 - [x] **Abandon / delete a session.** (`ac2552f`) `POST /interviews/{id}/abandon` keeps the transcript; `DELETE /interviews/{id}` cascades to questions, answers, and the report (verified against Postgres). `SessionStatus.CREATED` is still unreachable — sessions are created IN_PROGRESS, which is arguably correct; left alone deliberately.
   ~~`SessionStatus.CREATED` and `ABANDONED` are unreachable~~ — sessions are created as `IN_PROGRESS` and there is no endpoint to abandon or delete one, even though `complete()` already handles the abandoned case (`interview_service.py:160`).
 - [x] **Answer timing.** (`836c0b8`) Per-question timer in the UI, sent with the answer, shown on answered questions. Verified round-trip.
@@ -62,7 +66,7 @@ Scaffolding exists; the feature does not.
 ### CI/CD (P1) — ✅ COMPLETE (2026-08-08)
 - [x] **CI pipeline.** (`df3e09c`, `47965b9`, `e7115c4`) `.github/workflows/ci.yml`. Backend job with a Postgres 16 service: ruff, mypy, migrate, drift check, downgrade/upgrade round trip, pytest. Frontend job: typecheck, vitest, build. **Green: 203 backend + 26 frontend, zero skips.**
 - [x] **Migration drift check.** `backend/scripts/check_migration_drift.py` compares `Base.metadata` against the migrated database via alembic's autogenerate API. (`alembic revision --autogenerate` has no output-dir flag, so the generate-and-grep approach does not work.) Verified in both directions — it catches an added column and exits 1.
-  - Note: CI **only runs on GitHub**. The `gitlab` remote has no pipeline.
+  - **Decision:** GitHub Actions is the only CI target by design — the `gitlab` remote exists but a GitLab pipeline is explicitly out of scope, not a gap.
 - [ ] **Follow-up:** no coverage measurement or threshold yet.
 - [ ] **Follow-up:** no dependency scanning. `npm audit` reports pre-existing high findings in `next`, `postcss`, and `sharp`.
 ### Security (P1)
@@ -154,16 +158,32 @@ Linters are now **pinned** (`ruff==0.16.2`, `mypy==2.1.0`) with an explicit
 have — an unpinned range guarantees CI and developers eventually disagree.
 
 ## Suggested next step
-Phase 0 and most of Phase 1 are closed (2026-08-08). What remains in Phase 1:
-**async evaluation**, **question controls** (skip / re-answer / regenerate),
-**resume preview**, **skill breakdown**, and **report export**.
+Phases 0, 1, and 3 (testing/CI) are closed as of 2026-08-08.
 
-The highest-value work is now arguably **Phase 3 testing/CI** rather than the
-rest of Phase 1. Three genuine bugs this session were invisible to the test
-suite and only surfaced by driving real HTTP against real Postgres:
-a `MissingGreenlet` in the follow-up path, a mangled migration constraint name,
-and a rate limiter that returned 422 on every route it protected. The test
-fixture that made HTTP testing possible at all was itself only fixed mid-session.
+What is left, roughly in order of value:
+1. **Durable evaluation queue (Redis + arq)** — decided, scoped, not built. See
+   the follow-up under *Async evaluation* in Phase 1 for the problem, the
+   rejected alternative, and the shape of the work.
+2. **Phase 2 — auth completeness.** Logout, refresh-token rotation/revocation,
+   change password. The `jti` claim is already minted and never used.
+3. **Discovery items below** — PII masking before sending to the LLM is a real
+   security gap, not a nice-to-have.
+4. **Phase 4 roadmap** — production RAG, multi-provider, streaming.
+
+### Operational follow-ups (not code)
+- **Rotate the Gemini API key.** It was written to logs in cleartext before `e0e1ad6`.
+- **Rate-limit defaults sit above the account ceiling** (20/user/hour vs 20/day
+  for the whole free-tier account). Lower them, or move off the free tier.
+- **Move rate-limit counters to Redis** before running more than one worker —
+  they are per-process today, so N replicas means N× the intended ceiling. The
+  queue work above brings Redis into the stack anyway, so these pair naturally.
+
+### Why testing came before the rest of Phase 1
+Three genuine bugs were invisible to the test suite and only surfaced by driving
+real HTTP against real Postgres: a `MissingGreenlet` in the follow-up path, a
+mangled migration constraint name, and a rate limiter that returned 422 on every
+route it protected. The fixture that made HTTP testing possible at all was itself
+only fixed mid-session.
 
 ### Testing notes for whoever picks this up
 - `conftest.py` now disposes the SQLAlchemy engine between tests — without it,
