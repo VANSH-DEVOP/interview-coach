@@ -18,6 +18,7 @@ from app.services.resume_parser import ResumeParser
 from app.services.storage.base import StorageService
 
 if TYPE_CHECKING:
+    from app.services.ai.masking import Redactor
     from app.services.ai.rag import RAGService
 
 logger = logging.getLogger(__name__)
@@ -34,10 +35,14 @@ class ResumeService:
         resumes: ResumeRepository,
         storage: StorageService,
         rag_service: "RAGService | None" = None,
+        redactor: "Redactor | None" = None,
     ) -> None:
         self.resumes = resumes
         self.storage = storage
         self.rag_service = rag_service
+        # Indexing sends the resume to Google a chunk at a time. The parsed
+        # text stays whole in our own database; only what leaves is redacted.
+        self.redactor = redactor
 
     async def upload(
         self, *, user_id: uuid.UUID, file_name: str, content: bytes, content_type: str
@@ -96,7 +101,7 @@ class ResumeService:
             return
         try:
             chunk_count = await self.rag_service.index_resume(
-                resume.id, user_id, parsed_text
+                resume.id, user_id, parsed_text, redactor=self.redactor
             )
             logger.info(
                 f"Indexed resume {resume.id} with {chunk_count} chunks for RAG retrieval"

@@ -28,7 +28,9 @@ from app.db.session import AsyncSessionFactory
 from app.models.evaluation_report import EvaluationReport, ReportStatus
 from app.repositories.interview_repository import InterviewRepository
 from app.repositories.report_repository import ReportRepository
+from app.repositories.user_repository import UserRepository
 from app.services.ai.evaluator import QAPair, get_evaluator
+from app.services.ai.masking import redactor_for
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,8 @@ async def evaluate(session_id: uuid.UUID, user_id: uuid.UUID) -> None:
         interviews = InterviewRepository(db)
         reports = ReportRepository(db)
 
+        users = UserRepository(db)
+
         session = await interviews.get_owned(session_id, user_id, with_questions=True)
         report = await reports.get_owned_by_session(session_id, user_id)
         if session is None or report is None:
@@ -63,7 +67,14 @@ async def evaluate(session_id: uuid.UUID, user_id: uuid.UUID) -> None:
         report.status = ReportStatus.GENERATING
         await db.commit()
 
-        result = await get_evaluator().evaluate(
+        # There is no request and no CurrentUser out here, so the account
+        # holder is looked up explicitly. Worth one query: without it the
+        # transcript goes to the provider with the candidate's name intact
+        # wherever they typed it into an answer.
+        owner = await users.get(user_id)
+        redactor = redactor_for(owner.full_name if owner else None)
+
+        result = await get_evaluator(redactor).evaluate(
             target_role=session.target_role,
             transcript=[
                 QAPair(

@@ -10,9 +10,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.services.ai.degradation import record_fallback
+
+if TYPE_CHECKING:
+    from app.services.ai.masking import Redactor
 
 
 def _first(payload: dict[str, Any], keys: list[str], default: Any) -> Any:
@@ -319,13 +322,22 @@ class FallbackEvaluator(Evaluator):
             )
 
 
-def get_evaluator() -> Evaluator:
+def get_evaluator(redactor: "Redactor | None" = None) -> Evaluator:
+    """Factory.
+
+    Args:
+        redactor: Identity-aware redactor for the candidate being evaluated.
+            The transcript is their own words, so it can carry contact details
+            they typed into an answer as easily as a resume can.
+    """
     from app.core.config import get_settings
 
     settings = get_settings()
     if settings.GEMINI_API_KEY:
         from app.services.ai.gemini_client import GeminiClient
 
-        client = GeminiClient(settings.GEMINI_API_KEY, settings.GEMINI_MODEL)
+        client = GeminiClient(
+            settings.GEMINI_API_KEY, settings.GEMINI_MODEL, redactor=redactor
+        )
         return FallbackEvaluator(GeminiEvaluator(client), HeuristicEvaluator())
     return HeuristicEvaluator()

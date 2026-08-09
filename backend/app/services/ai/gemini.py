@@ -15,6 +15,7 @@ from app.services.ai.base import GeneratedQuestion, InterviewSpec, QuestionGener
 from app.services.ai.gemini_client import GeminiClient
 
 if TYPE_CHECKING:
+    from app.services.ai.masking import Redactor
     from app.services.ai.rag import RAGService
 
 logger = logging.getLogger(__name__)
@@ -59,9 +60,17 @@ _SYSTEM = (
 
 
 class GeminiQuestionGenerator(QuestionGenerator):
-    def __init__(self, client: GeminiClient, rag_service: "RAGService | None" = None) -> None:
+    def __init__(
+        self,
+        client: GeminiClient,
+        rag_service: "RAGService | None" = None,
+        redactor: "Redactor | None" = None,
+    ) -> None:
         self._client = client
         self._rag_service = rag_service
+        # Only for retrieval: the client redacts its own prompts. Retrieval
+        # embeds the query on a different HTTP call that the client never sees.
+        self._redactor = redactor
 
     async def _resume_context(
         self,
@@ -81,7 +90,7 @@ class GeminiQuestionGenerator(QuestionGenerator):
         if self._rag_service and resume_id and resume_text:
             try:
                 context = await self._rag_service.retrieve_context(
-                    resume_id, query, top_k=5
+                    resume_id, query, top_k=5, redactor=self._redactor
                 )
             except Exception as e:
                 logger.warning(

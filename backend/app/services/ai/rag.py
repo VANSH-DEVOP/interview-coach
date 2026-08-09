@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.services.ai.masking import Redactor
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +81,8 @@ class RAGService:
         resume_id: uuid.UUID,
         user_id: uuid.UUID,
         resume_text: str,
+        *,
+        redactor: "Redactor | None" = None,
     ) -> int:
         """Index a resume for RAG retrieval.
 
@@ -85,6 +90,7 @@ class RAGService:
             resume_id: Resume ID.
             user_id: User ID.
             resume_text: Full parsed resume text.
+            redactor: Applied to each chunk before it is sent for embedding.
 
         Returns:
             Number of chunks stored.
@@ -102,7 +108,9 @@ class RAGService:
             logger.info(f"Chunked resume {resume_id} into {len(chunks)} pieces")
 
             # Generate embeddings for chunks
-            embeddings = await self._embedding_service.embed_batch(chunks)
+            embeddings = await self._embedding_service.embed_batch(
+                chunks, redactor=redactor
+            )
 
             # Filter out failed embeddings
             valid_chunks = [
@@ -133,6 +141,8 @@ class RAGService:
         resume_id: uuid.UUID,
         query: str,
         top_k: int = 5,
+        *,
+        redactor: "Redactor | None" = None,
     ) -> str:
         """Retrieve relevant resume context for a query.
 
@@ -140,6 +150,9 @@ class RAGService:
             resume_id: Resume ID.
             query: Query string (e.g., interview question).
             top_k: Number of top results to retrieve.
+            redactor: Applied to the query before it is sent for embedding.
+                A follow-up query is the candidate's own answer text, so it is
+                no less sensitive than the resume it is matched against.
 
         Returns:
             Concatenated context from top-k relevant chunks.
@@ -149,7 +162,9 @@ class RAGService:
         """
         try:
             # Embed the query
-            query_embedding = await self._embedding_service.embed_text(query)
+            query_embedding = await self._embedding_service.embed_text(
+                query, redactor=redactor
+            )
 
             # Retrieve similar chunks
             results = await self._vector_store.retrieve_relevant(

@@ -42,9 +42,11 @@ class _FakeRag:
         self._context = context
         self._error = error
         self.queries: list[str] = []
+        self.redactors: list[object] = []
 
-    async def retrieve_context(self, resume_id, query, top_k=5):
+    async def retrieve_context(self, resume_id, query, top_k=5, *, redactor=None):
         self.queries.append(query)
+        self.redactors.append(redactor)
         if self._error is not None:
             raise self._error
         return self._context

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from app.services.ai.degradation import record_fallback
 
 if TYPE_CHECKING:
+    from app.services.ai.masking import Redactor
     from app.services.ai.rag import RAGService
 
 
@@ -168,14 +169,21 @@ class FallbackQuestionGenerator(QuestionGenerator):
             )
 
 
-def get_question_generator(rag_service: "RAGService | None" = None) -> QuestionGenerator:
+def get_question_generator(
+    rag_service: "RAGService | None" = None,
+    redactor: "Redactor | None" = None,
+) -> QuestionGenerator:
     """Factory.
 
     Returns a Gemini-backed generator (with static fallback) when
     GEMINI_API_KEY is configured; otherwise the deterministic static generator.
-    
+
     Args:
         rag_service: Optional RAG service for retrieving relevant resume context.
+        redactor: Identity-aware redactor for the account holder whose resume
+            this will read. Omitting it does not disable redaction -- the
+            boundaries fall back to patterns alone -- it only means the
+            candidate's own name is not recognised as theirs.
     """
     from app.core.config import get_settings
 
@@ -184,8 +192,11 @@ def get_question_generator(rag_service: "RAGService | None" = None) -> QuestionG
         from app.services.ai.gemini import GeminiQuestionGenerator
         from app.services.ai.gemini_client import GeminiClient
 
-        client = GeminiClient(settings.GEMINI_API_KEY, settings.GEMINI_MODEL)
+        client = GeminiClient(
+            settings.GEMINI_API_KEY, settings.GEMINI_MODEL, redactor=redactor
+        )
         return FallbackQuestionGenerator(
-            GeminiQuestionGenerator(client, rag_service=rag_service), StaticQuestionGenerator()
+            GeminiQuestionGenerator(client, rag_service=rag_service, redactor=redactor),
+            StaticQuestionGenerator(),
         )
     return StaticQuestionGenerator()

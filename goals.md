@@ -123,7 +123,43 @@ Scaffolding exists; the feature does not.
 - [ ] Keep `CLAUDE.md`, `backend/AI_INTEGRATION.md`, and `backend/RAG_IMPLEMENTATION.md` in sync as these land.
 ___
 ## Discovery 
-- [ ] **User-Data (PII) Masking** the pipeline doesn't handle the user data masking before sending it to the LLM it's a security issue.
+- [x] **User-Data (PII) Masking** the pipeline doesn't handle the user data masking before sending it to the LLM it's a security issue.
+  → Shipped 2026-08-09. `app/services/ai/masking.py`. Redacts email, phone,
+  URL, government IDs, and the account holder's name; leaves employers, titles,
+  schools, technologies and dates alone because those *are* the interview.
+
+  **Where it runs.** At the two HTTP boundaries — `GeminiClient.generate_json`
+  and `EmbeddingService.embed_text` — not in the code that builds prompts. A
+  new call site cannot forget a step it never has to take. Both default to a
+  pattern-only redactor, so failing to plumb an identity downgrades the
+  redaction instead of disabling it.
+
+  **One-way on purpose.** No placeholder→value map, nothing restored on the
+  way back. The cost is that a model echoing a placeholder shows the user
+  `[REDACTED_EMAIL]`; the benefit is that no later bug can re-attach a
+  redacted value to model output.
+
+  **What a realistic resume exposed** (the synthetic tests missed both):
+  - A three-letter first name survived, because only the full "Ada Lovelace"
+    was matched — so the body text "Ada led the team" leaked the name one line
+    below a redacted header. Fixed by matching name parts down to 3 characters,
+    case-sensitively so "Long" the surname does not eat "long-term ownership".
+  - Passing the account email as a known literal mislabelled it `NAME`, because
+    literals are matched before patterns and sorted longest-first. Literals are
+    names only now; the email pattern already covers the address.
+
+  **Known limits, deliberate:**
+  - Street addresses are not detected. Regex cannot do it with usable
+    precision and a wrong guess corrupts the resume.
+  - Two-character name parts are not matched — "Li" is indistinguishable from
+    "Go", "AI", "ML", "QA".
+  - A capitalised word matching a surname is redacted: a candidate named Sun
+    loses "Sun Microsystems" to a placeholder. One redacted word is the
+    cheaper error.
+  - Three 4-digit groups read as an identity number, so a bare "2019 2020 2021"
+    would be redacted. Rare enough to accept.
+  - Postgres and Chroma still store the resume in full. The control is about
+    what crosses the network, not storage at rest.
 - [ ] **RAG implementation** it's too simple , like I want production level rag implementaion (hybrid-search , langchain, langgraph and all that neccessary items ) ideal pipeline:
 User
   │
@@ -178,10 +214,20 @@ evaluation queue landed 2026-08-09.
 Phase 2 (auth & account completeness) closed the same day.
 
 What is left, roughly in order of value:
-1. **Discovery items below** — PII masking before sending to the LLM is a real
-   security gap, not a nice-to-have.
-2. **Phase 4 roadmap** — production RAG, multi-provider, streaming.
-3. **Phase 3 leftovers** — no coverage threshold, no dependency scanning.
+PII masking closed 2026-08-09; see the Discovery section for what it does and
+what it deliberately does not.
+
+1. **Stale-report reconciliation** — a Redis restart drops queued jobs and
+   nothing ever flips the orphaned reports, so they sit PENDING forever and the
+   UI spins. `app/main.py` runs `recover_stale_reports()` only when there is no
+   Redis pool, which is right for an API restart and wrong for a Redis one.
+   Fix: an age-thresholded sweep on an arq cron, re-enqueueing rather than
+   failing. Verified live; the same cron is the obvious home for the expired
+   token pruning below.
+2. **Remaining Discovery items** — production RAG, query rewriting / prompt
+   injection, and the frontend treating every error as a logout.
+3. **Phase 4 roadmap** — production RAG, multi-provider, streaming.
+4. **Phase 3 leftovers** — no coverage threshold, no dependency scanning.
 
 ### Operational follow-ups (not code)
 - **Rotate the Gemini API key.** It was written to logs in cleartext before `e0e1ad6`.

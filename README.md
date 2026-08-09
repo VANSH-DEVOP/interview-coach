@@ -171,6 +171,21 @@ container must not produce a green build.
   unusable. It is recorded and surfaced, not enforced.
 - **`EMAIL_BACKEND=log` is refused in production.** It prints reset links in
   full. A production start fails until SMTP is configured; that is deliberate.
+- **Direct identifiers are redacted before any text reaches the AI provider.**
+  Prompts and embedding requests both pass through `app/services/ai/masking.py`,
+  which strips email addresses, phone numbers, URLs, government identity
+  numbers, and the account holder's own name. Employers, titles, schools,
+  technologies and dates survive — they are the interview, and none of them is
+  a direct identifier. This is pseudonymisation, not anonymity.
+  - Redaction happens **at the two HTTP boundaries** (`GeminiClient` and
+    `EmbeddingService`), not in the code that builds prompts, so a new call
+    site cannot forget it. Both default to a pattern-only redactor, meaning a
+    caller that omits the account holder's identity degrades to "no name
+    matching" rather than to "no redaction".
+  - It is **one-way**: nothing is restored on the way back, so no later bug can
+    re-attach a redacted value to model output.
+  - Postgres and the Chroma index still hold the resume in full. The control is
+    about what crosses the network to a third party, not about storage at rest.
 - Resume uploads: content-type allowlist, 5 MiB cap, opaque storage keys, path-traversal protection.
 - Account deletion is a hard delete, and clears the resume blobs and the vector
   index as well as the database rows — the database cascade cannot reach either.

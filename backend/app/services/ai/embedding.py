@@ -1,10 +1,18 @@
-"""Embedding service using Gemini API for text vectorization."""
+"""Embedding service using Gemini API for text vectorization.
+
+The second place text leaves for Google, and the one that is easy to forget:
+indexing a resume ships the whole document a chunk at a time. Redaction happens
+here for the same reason it happens in GeminiClient -- at the boundary, so no
+call site can omit it.
+"""
 
 from __future__ import annotations
 
 import logging
 
 import httpx
+
+from app.services.ai.masking import Redactor, default_redactor
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +37,15 @@ class EmbeddingService:
         self._timeout = timeout
         self._model = model
 
-    async def embed_text(self, text: str) -> list[float]:
+    async def embed_text(
+        self, text: str, *, redactor: Redactor | None = None
+    ) -> list[float]:
         """Generate embedding for a single text.
 
         Args:
-            text: Text to embed.
+            text: Text to embed. Redacted before it leaves the process.
+            redactor: Identity-aware redactor. Omitting it falls back to the
+                pattern-only default rather than to no redaction.
 
         Returns:
             Embedding vector as list[float].
@@ -44,10 +56,15 @@ class EmbeddingService:
         if not text or not text.strip():
             raise EmbeddingError("Cannot embed empty text.")
 
+        # Documents and queries are both redacted, so they stay in the same
+        # space and similarity is unaffected. The identifiers that disappear
+        # carry no meaning a retrieval could use anyway.
+        redacted = (redactor or default_redactor()).redact(text)
+
         url = f"{_BASE_URL}/{self._model}:embedContent"
         body = {
             "model": self._model,
-            "content": {"parts": [{"text": text}]},
+            "content": {"parts": [{"text": redacted}]},
         }
 
         try:
@@ -74,11 +91,14 @@ class EmbeddingService:
         except (KeyError, IndexError, ValueError) as exc:
             raise EmbeddingError(f"Unexpected embedding response: {exc}") from exc
 
-    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    async def embed_batch(
+        self, texts: list[str], *, redactor: Redactor | None = None
+    ) -> list[list[float]]:
         """Generate embeddings for multiple texts.
 
         Args:
-            texts: List of texts to embed.
+            texts: List of texts to embed. Each is redacted before it is sent.
+            redactor: Identity-aware redactor, applied to every text.
 
         Returns:
             List of embedding vectors.
@@ -89,7 +109,7 @@ class EmbeddingService:
         embeddings = []
         for text in texts:
             try:
-                embedding = await self.embed_text(text)
+                embedding = await self.embed_text(text, redactor=redactor)
                 embeddings.append(embedding)
             except EmbeddingError as e:
                 logger.warning(f"Failed to embed text: {e}")

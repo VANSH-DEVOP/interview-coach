@@ -29,6 +29,7 @@ from app.repositories.user_repository import UserRepository
 from app.services.account_service import AccountService
 from app.services.ai.base import get_question_generator
 from app.services.ai.embedding import EmbeddingService
+from app.services.ai.masking import redactor_for
 from app.services.ai.rag import RAGService
 from app.services.ai.vector_store import get_vector_store
 from app.services.auth_service import AuthService
@@ -111,6 +112,32 @@ def get_rag_service() -> "RAGService | None":
     return RAGService(embedding_service, vector_store)
 
 
+# -- Authentication -------------------------------------------------------------
+# Above the services on purpose: several of them take CurrentUser so the PII
+# redactor knows whose name is identifying, and this module deliberately has no
+# `from __future__ import annotations` (see the rate-limiting note below), so a
+# name must be defined before the signature that mentions it.
+async def get_current_user(
+    users: Annotated[UserRepository, Depends(get_user_repository)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)] = None,
+) -> User:
+    if credentials is None:
+        raise UnauthorizedError("Missing authentication credentials.")
+    try:
+        payload = decode_token(credentials.credentials, expected_type="access")
+        user_id = uuid.UUID(payload["sub"])
+    except (pyjwt.InvalidTokenError, KeyError, ValueError) as exc:
+        raise UnauthorizedError("Invalid or expired access token.") from exc
+
+    user = await users.get(user_id)
+    if user is None or not user.is_active:
+        raise UnauthorizedError("Account is no longer active.")
+    return user
+
+
+CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
 # -- Services ------------------------------------------------------------------
 def get_auth_service(
     users: Annotated[UserRepository, Depends(get_user_repository)],
@@ -164,20 +191,31 @@ def get_report_service(
 
 def get_resume_service(
     resumes: Annotated[ResumeRepository, Depends(get_resume_repository)],
+    current_user: CurrentUser,
 ) -> ResumeService:
+    # The current user is a dependency purely so the redactor knows whose name
+    # to treat as identifying; every route using this service already requires
+    # authentication, so it costs no extra work.
     rag_service = get_rag_service()
-    return ResumeService(resumes, get_storage_service(), rag_service)
+    return ResumeService(
+        resumes,
+        get_storage_service(),
+        rag_service,
+        redactor_for(current_user.full_name),
+    )
 
 
 def get_interview_service(
     interviews: Annotated[InterviewRepository, Depends(get_interview_repository)],
     resumes: Annotated[ResumeRepository, Depends(get_resume_repository)],
     reports: Annotated[ReportRepository, Depends(get_report_repository)],
+    current_user: CurrentUser,
 ) -> InterviewService:
+    redactor = redactor_for(current_user.full_name)
     return InterviewService(
         interviews,
         resumes,
-        get_question_generator(rag_service=get_rag_service()),
+        get_question_generator(rag_service=get_rag_service(), redactor=redactor),
         reports,
     )
 
@@ -195,28 +233,6 @@ def get_evaluation_queue(request: Request, background: BackgroundTasks) -> Evalu
 
 
 EvaluationQueueDep = Annotated[EvaluationQueue, Depends(get_evaluation_queue)]
-
-
-# -- Authentication -------------------------------------------------------------
-async def get_current_user(
-    users: Annotated[UserRepository, Depends(get_user_repository)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)] = None,
-) -> User:
-    if credentials is None:
-        raise UnauthorizedError("Missing authentication credentials.")
-    try:
-        payload = decode_token(credentials.credentials, expected_type="access")
-        user_id = uuid.UUID(payload["sub"])
-    except (pyjwt.InvalidTokenError, KeyError, ValueError) as exc:
-        raise UnauthorizedError("Invalid or expired access token.") from exc
-
-    user = await users.get(user_id)
-    if user is None or not user.is_active:
-        raise UnauthorizedError("Account is no longer active.")
-    return user
-
-
-CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
 # -- Rate limiting ---------------------------------------------------------------

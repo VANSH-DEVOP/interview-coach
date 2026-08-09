@@ -54,10 +54,12 @@ class _FakeStorage:
 class _FakeRag:
     def __init__(self, *, index_error: Exception | None = None) -> None:
         self.calls: list[tuple[str, uuid.UUID]] = []
+        self.redactors: list[object] = []
         self._index_error = index_error
 
-    async def index_resume(self, resume_id, user_id, text):
+    async def index_resume(self, resume_id, user_id, text, *, redactor=None):
         self.calls.append(("index", resume_id))
+        self.redactors.append(redactor)
         if self._index_error is not None:
             raise self._index_error
         return 3

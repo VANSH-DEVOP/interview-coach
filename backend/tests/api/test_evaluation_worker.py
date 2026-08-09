@@ -8,6 +8,7 @@ staring at a spinner that will never resolve.
 """
 
 import uuid
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
@@ -77,7 +78,7 @@ async def test_a_provider_failure_marks_the_report_failed(
     # and the UI would spin forever.
     session_id, user_id = completed_session
     monkeypatch.setattr(
-        evaluation_worker, "get_evaluator", lambda: _ExplodingEvaluator()
+        evaluation_worker, "get_evaluator", lambda redactor=None: _ExplodingEvaluator()
     )
 
     await run_evaluation(session_id, user_id)
@@ -87,12 +88,50 @@ async def test_a_provider_failure_marks_the_report_failed(
     assert report.status is ReportStatus.FAILED
 
 
+async def test_the_worker_builds_a_redactor_from_the_account_holder(
+    completed_session, monkeypatch
+):
+    """There is no request out here, so the name has to be looked up.
+
+    The redaction itself happens at the provider boundary and is covered in
+    tests/test_masking_boundary.py. What can only be checked here is that the
+    worker hands the boundary an identity at all -- without it the transcript
+    goes out with the candidate's name wherever they typed it.
+    """
+    session_id, user_id = completed_session
+    captured: list[object] = []
+
+    def _capture(redactor=None) -> Evaluator:
+        captured.append(redactor)
+        return _ScoringStub()
+
+    monkeypatch.setattr(evaluation_worker, "get_evaluator", _capture)
+
+    await run_evaluation(session_id, user_id)
+
+    assert len(captured) == 1
+    redactor = captured[0]
+    assert redactor is not None
+    # "Test User" is the full_name the registered_user fixture signs up with.
+    assert "[REDACTED_NAME]" in redactor.redact("Test User wrote this")
+
+
+class _ScoringStub(Evaluator):
+    async def evaluate(self, *, target_role, transcript) -> EvaluationResult:
+        return EvaluationResult(
+            overall_score=Decimal("5.00"),
+            strengths=["ok"],
+            weaknesses=[],
+            detailed_feedback={},
+        )
+
+
 async def test_run_evaluation_never_raises(completed_session, monkeypatch):
     # It runs as a background task; an escaping exception would vanish into the
     # event loop with nothing recorded anywhere.
     session_id, user_id = completed_session
     monkeypatch.setattr(
-        evaluation_worker, "get_evaluator", lambda: _ExplodingEvaluator()
+        evaluation_worker, "get_evaluator", lambda redactor=None: _ExplodingEvaluator()
     )
 
     await run_evaluation(session_id, user_id)  # must not raise
@@ -215,7 +254,7 @@ async def test_reevaluate_returns_a_pending_report_before_scoring(
     await api.post(f"/api/v1/interviews/{session_id}/complete", headers=headers)
 
     # Stop the queued work from running so the immediate response is visible.
-    monkeypatch.setattr(evaluation_worker, "get_evaluator", lambda: _ExplodingEvaluator())
+    monkeypatch.setattr(evaluation_worker, "get_evaluator", lambda redactor=None: _ExplodingEvaluator())
 
     response = await api.post(f"/api/v1/interviews/{session_id}/reevaluate", headers=headers)
 
