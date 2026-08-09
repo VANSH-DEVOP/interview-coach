@@ -31,12 +31,20 @@ This repository contains the production-grade foundation: full authentication, r
 │  core: settings · security · logging · exceptions   │
 │  middleware: error envelope · request logging        │
 │  seams: StorageService · QuestionGenerator (AI)      │
-└───────────────────────┬─────────────────────────────┘
-                        │ SQLAlchemy (async) · Alembic
-┌───────────────────────▼─────────────────────────────┐
-│  DATA · PostgreSQL 16                                │
-└─────────────────────────────────────────────────────┘
+└──────────┬────────────────────────────┬─────────────┘
+           │ SQLAlchemy (async)         │ arq / Redis
+           │ Alembic                    │ (evaluation jobs)
+┌──────────▼──────────────┐  ┌──────────▼─────────────┐
+│  DATA · PostgreSQL 16    │  │  WORKER · arq          │
+│                          │◄─┤  app/worker.py         │
+└──────────────────────────┘  └────────────────────────┘
 ```
+
+The worker is a **second process running the same image**. Ending an interview
+returns immediately with a PENDING report; the evaluation itself is a provider
+round-trip, so it is queued and the client polls. Without `REDIS_URL` the API
+falls back to in-process background tasks — same result, but a restart loses
+the work. See `app/services/job_queue.py`.
 
 **Layer rules**
 
@@ -101,6 +109,14 @@ alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
+Evaluations run in-process unless `REDIS_URL` is set. To run them the way
+production does, start Redis and add a second terminal:
+
+```bash
+cd backend
+arq app.worker.WorkerSettings     # needs REDIS_URL, same as the API
+```
+
 Frontend:
 
 ```bash
@@ -114,6 +130,11 @@ Tests:
 ```bash
 cd backend && pytest
 ```
+
+Tests that need Postgres or Redis **skip** when the service is not reachable, so
+`pytest` stays useful with nothing running. CI sets `REQUIRE_TEST_DATABASE=1`
+and `REQUIRE_TEST_REDIS=1` to turn those skips into failures — a broken service
+container must not produce a green build.
 
 ## 5. Development Workflow
 

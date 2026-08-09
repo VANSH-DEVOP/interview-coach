@@ -25,11 +25,17 @@ Scaffolding exists; the feature does not.
 - [x] **Follow-ups have no resume context.** `interview_service.py:136` calls `follow_up(..., resume_text=None)` and never consults RAG. Pass the session's resume text and add a RAG retrieval keyed on the answer.
   → **Done** (`e1a985f`). `follow_up` seam widened with `resume_id`; retrieval is keyed on question+answer, not the role. Also fixed a latent `MissingGreenlet` crash in the follow-up branch (`session.questions` lazy-loaded on a session fetched without them) — never fired only because the model was 404ing. Replaced with `InterviewRepository.next_sequence_number`.
 - [x] **Async evaluation.** (`7d87731`) `complete()` writes a PENDING report and returns; `app/services/evaluation_worker.py` runs it through GENERATING → COMPLETED/FAILED on its own session, never raising. `recover_stale_reports()` on startup flips work abandoned by a restart to FAILED so the UI shows a retry rather than an endless spinner. Frontend polls every 2s and stops once settled.
-  - [ ] **Follow-up — durable queue (Redis + arq). Decided 2026-08-09, not yet implemented.**
+  - [x] **Follow-up — durable queue (Redis + arq). Decided 2026-08-09, implemented the same day.**
     **Problem:** `BackgroundTasks` schedules an `asyncio` task inside the web-server process. Nothing records that the job exists except the report row sitting at `PENDING`/`GENERATING`, so a restart mid-evaluation — a deploy, a container reschedule, an OOM kill — drops the work silently. `recover_stale_reports()` limits the damage by flipping orphaned rows to `FAILED` at startup (a visible retry rather than an endless spinner), but the user's evaluation is genuinely lost and they have to notice and re-run it. Frequency scales with deploy rate, not usage.
     **Chosen approach:** Redis + `arq` — Redis-backed, async-native, matches the existing async stack. Rejected the Postgres-only alternative (have `recover_stale_reports()` re-run the work instead of failing it), which needs no new infrastructure but has no retry/backoff, no protection if the new process also dies, and needs an atomic `UPDATE ... RETURNING` claim to be safe across replicas — all of which arq gives for free.
-    **Shape of the work:** `arq` dependency + `REDIS_URL` setting → `redis` service and a **new long-running `worker` service** in `docker-compose.yml` (the app has no such process today; same image, different command) → `app/worker.py` with `WorkerSettings` → redis pool created in the FastAPI lifespan, exposed via a `deps.py` dependency → the two `background.add_task(...)` call sites in `app/api/v1/interviews.py` (`complete_interview`, `reevaluate_interview`) become `enqueue_job` → `recover_stale_reports()` moves to worker startup and may become unnecessary entirely → `redis` service added to the CI workflow → test fixtures reworked, since the `api` fixture currently relies on `BackgroundTasks` running synchronously under `ASGITransport` to observe the report reaching `COMPLETED`.
-    **Why it's cheap to swap:** `run_evaluation(session_id, user_id)` takes no request-scoped state, so the status machine and the worker function itself are unchanged.
+    → **Done.** Shipped close to the plan, with three deliberate departures:
+    - **The queue is a seam, not a hard dependency.** `app/services/job_queue.py` holds an `EvaluationQueue` that prefers the arq pool and falls back to `BackgroundTasks` when there isn't one — the same primary/fallback shape as the AI layer. Without it, `uvicorn app.main:app` and the whole test suite would require Redis. The degradation is counted and surfaced on `/health` under `queue`, because a queue that has quietly stopped being a queue produces *correct reports* and so gives nothing else away.
+    - **`recover_stale_reports()` had to become conditional, not move.** With a queue, a `PENDING` row has a real job behind it, so failing those rows on boot would destroy live work — every deploy would kill the evaluations in flight. The lifespan runs it only when no pool was opened.
+    - **Retries needed the never-raises contract split in two.** `run_evaluation` swallowing failures is right for the in-process path and wrong for the worker: a swallowed exception is a job arq considers successful, so retries would silently never happen. `evaluate()` now raises and `run_evaluation()` wraps it; the worker re-raises on every attempt but the last, and only the last writes `FAILED`.
+    **The bug this uncovered — the handoff happened before the commit.** `complete()` only *flushed*, so the completed session and its `PENDING` report existed nowhere outside the request's transaction. The runner opens its own session, found neither, logged "session no longer exists" and returned — leaving the report on `PENDING` forever with no error anywhere. **This shipped in `7d87731` and was live on `main`;** verified by stashing this work and reproducing against the previous commit. Every test passed throughout, because the `api` fixture points the runner's session factory at the test's own connection, so a flush *is* visible to it — the fixture that makes those tests possible is the same one that made this invisible. `complete()` and `reevaluate()` now commit, with `tests/api/test_evaluation_handoff.py` asserting the commit itself rather than the report status (confirmed to fail against the flush).
+    Note this was a *race* the queue would have hidden rather than fixed: the worker happened to pick jobs up a few hundred ms later, by which point the commit had landed.
+    **Testing:** the branching is unit-tested with a fake pool (`tests/test_job_queue.py`); the arq contract — job lands on the queue arq reads, under the name the worker registered, with arguments that survive serialisation — is integration-tested against real Redis (`tests/api/test_queue_integration.py`), skipping when none is reachable and hard-failing under `REQUIRE_TEST_REDIS`, mirroring the Postgres fixtures. 271 → 291 tests.
+    **Verified by hand** against docker-compose-shaped processes: job executed by the separate worker (API log shows the enqueue and no evaluation); a job enqueued with the worker down survived an **API restart still `PENDING`** and completed when the worker came up; an unreachable Redis still boots the API and completes evaluations in-process.
 - [x] **Abandon / delete a session.** (`ac2552f`) `POST /interviews/{id}/abandon` keeps the transcript; `DELETE /interviews/{id}` cascades to questions, answers, and the report (verified against Postgres). `SessionStatus.CREATED` is still unreachable — sessions are created IN_PROGRESS, which is arguably correct; left alone deliberately.
   ~~`SessionStatus.CREATED` and `ABANDONED` are unreachable~~ — sessions are created as `IN_PROGRESS` and there is no endpoint to abandon or delete one, even though `complete()` already handles the abandoned case (`interview_service.py:160`).
 - [x] **Answer timing.** (`836c0b8`) Per-question timer in the UI, sent with the answer, shown on answered questions. Verified round-trip.
@@ -158,25 +164,29 @@ Linters are now **pinned** (`ruff==0.16.2`, `mypy==2.1.0`) with an explicit
 have — an unpinned range guarantees CI and developers eventually disagree.
 
 ## Suggested next step
-Phases 0, 1, and 3 (testing/CI) are closed as of 2026-08-08.
+Phases 0, 1, and 3 (testing/CI) are closed as of 2026-08-08. The durable
+evaluation queue landed 2026-08-09.
 
 What is left, roughly in order of value:
-1. **Durable evaluation queue (Redis + arq)** — decided, scoped, not built. See
-   the follow-up under *Async evaluation* in Phase 1 for the problem, the
-   rejected alternative, and the shape of the work.
-2. **Phase 2 — auth completeness.** Logout, refresh-token rotation/revocation,
+1. **Phase 2 — auth completeness.** Logout, refresh-token rotation/revocation,
    change password. The `jti` claim is already minted and never used.
-3. **Discovery items below** — PII masking before sending to the LLM is a real
+2. **Discovery items below** — PII masking before sending to the LLM is a real
    security gap, not a nice-to-have.
-4. **Phase 4 roadmap** — production RAG, multi-provider, streaming.
+3. **Phase 4 roadmap** — production RAG, multi-provider, streaming.
 
 ### Operational follow-ups (not code)
 - **Rotate the Gemini API key.** It was written to logs in cleartext before `e0e1ad6`.
 - **Rate-limit defaults sit above the account ceiling** (20/user/hour vs 20/day
   for the whole free-tier account). Lower them, or move off the free tier.
-- **Move rate-limit counters to Redis** before running more than one worker —
-  they are per-process today, so N replicas means N× the intended ceiling. The
-  queue work above brings Redis into the stack anyway, so these pair naturally.
+- **Move rate-limit counters to Redis** before running more than one API replica
+  — they are per-process today, so N replicas means N× the intended ceiling.
+  Redis is now in the stack, so this is a small change rather than a new
+  dependency.
+- **The `worker` service is not covered by a health check or a restart alarm.**
+  If it dies, the API keeps accepting interviews and every report sits on
+  `PENDING` — the queue drains when it returns, so nothing is lost, but nothing
+  says so either. `/health` reports the *API's* view of Redis, not whether
+  anything is consuming.
 
 ### Why testing came before the rest of Phase 1
 Three genuine bugs were invisible to the test suite and only surfaced by driving
