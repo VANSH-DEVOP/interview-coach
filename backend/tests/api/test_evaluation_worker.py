@@ -8,16 +8,22 @@ staring at a spinner that will never resolve.
 """
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
+from app.core.config import get_settings
 from app.models.evaluation_report import EvaluationReport, ReportStatus
 from app.models.interview_session import InterviewSession, SessionStatus
 from app.services import evaluation_worker
 from app.services.ai.evaluator import EvaluationResult, Evaluator
-from app.services.evaluation_worker import recover_stale_reports, run_evaluation
+from app.services.evaluation_worker import (
+    reconcile_stale_reports,
+    recover_stale_reports,
+    run_evaluation,
+)
 
 
 class _ExplodingEvaluator(Evaluator):
@@ -218,6 +224,180 @@ async def test_recover_stale_reports_survives_an_unreachable_database(monkeypatc
     monkeypatch.setattr(evaluation_worker, "AsyncSessionFactory", _boom)
 
     assert await recover_stale_reports() == 0
+
+
+# -- Queued reconciliation -----------------------------------------------------
+#
+# The counterpart to the pass above, for the case where a queue exists. Redis
+# restarting drops every queued job; the API's boot-time recovery is gated off
+# exactly then, so nothing else would ever touch those rows.
+
+
+class _RecordingQueue:
+    """Collects what the sweep re-queued, in place of a Redis pool."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.jobs: list[tuple[uuid.UUID, uuid.UUID]] = []
+        self._fail = fail
+
+    async def __call__(self, session_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        if self._fail:
+            raise ConnectionError("redis is still down")
+        self.jobs.append((session_id, user_id))
+
+
+async def _age(db_session, session_id: uuid.UUID, *, updated: timedelta, created=None) -> None:
+    """Backdate a report's timestamps to simulate one left behind.
+
+    Written straight to the columns: `updated_at` has an onupdate default, so
+    setting it through the ORM attribute is the only way to age a row, and the
+    created_at side has no attribute-level path at all.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    values: dict = {"updated_at": now - updated}
+    if created is not None:
+        values["created_at"] = now - created
+    await db_session.execute(
+        update(EvaluationReport)
+        .where(EvaluationReport.session_id == session_id)
+        .values(**values)
+    )
+    await db_session.commit()
+
+
+@pytest.fixture
+def stale_after() -> timedelta:
+    return timedelta(seconds=get_settings().EVALUATION_STALE_AFTER_SECONDS)
+
+
+async def test_an_orphaned_report_is_queued_again(completed_session, db_session, stale_after):
+    """The Redis-restart case: a PENDING report with no job behind it."""
+    session_id, user_id = completed_session
+    await _age(db_session, session_id, updated=stale_after * 2)
+    queue = _RecordingQueue()
+
+    outcome = await reconcile_stale_reports(queue)
+
+    assert outcome.requeued == 1
+    assert (session_id, user_id) in queue.jobs
+
+
+async def test_a_report_still_generating_is_queued_again(
+    completed_session, db_session, stale_after
+):
+    """GENERATING means a worker claimed it and then vanished mid-flight."""
+    session_id, _ = completed_session
+    report = await _report(db_session, session_id)
+    report.status = ReportStatus.GENERATING
+    await db_session.commit()
+    await _age(db_session, session_id, updated=stale_after * 2)
+
+    outcome = await reconcile_stale_reports(_RecordingQueue())
+
+    assert outcome.requeued == 1
+    await db_session.refresh(report)
+    # Back to PENDING: nothing is generating it, and leaving it there would let
+    # the next sweep read it as claimed work.
+    assert report.status is ReportStatus.PENDING
+
+
+async def test_a_recent_report_is_left_for_the_job_that_owns_it(
+    completed_session, db_session
+):
+    """The one that must not fire.
+
+    A slow evaluation is indistinguishable from an orphaned one except by age.
+    Queueing this would put two workers on the same session.
+    """
+    session_id, _ = completed_session
+    queue = _RecordingQueue()
+
+    outcome = await reconcile_stale_reports(queue)
+
+    assert queue.jobs == []
+    assert outcome.requeued == 0
+
+
+async def test_a_finished_report_is_never_touched(completed_session, db_session, stale_after):
+    session_id, user_id = completed_session
+    await run_evaluation(session_id, user_id)
+    await _age(db_session, session_id, updated=stale_after * 2)
+    queue = _RecordingQueue()
+
+    await reconcile_stale_reports(queue)
+
+    report = await _report(db_session, session_id)
+    await db_session.refresh(report)
+    assert report.status is ReportStatus.COMPLETED
+    assert queue.jobs == []
+
+
+async def test_a_requeued_report_is_not_queued_twice_by_the_next_sweep(
+    completed_session, db_session, stale_after
+):
+    """The touch on updated_at is what bounds the retry rate.
+
+    PENDING -> PENDING is not a change, so without an explicit write the row
+    stays old and every sweep from here on queues it again.
+    """
+    session_id, _ = completed_session
+    await _age(db_session, session_id, updated=stale_after * 2)
+    queue = _RecordingQueue()
+
+    first = await reconcile_stale_reports(queue)
+    second = await reconcile_stale_reports(queue)
+
+    assert first.requeued == 1
+    assert second.requeued == 0
+    assert len(queue.jobs) == 1
+
+
+async def test_a_report_past_the_give_up_age_is_failed_instead(
+    completed_session, db_session, stale_after
+):
+    """Otherwise a session that can never be evaluated is retried forever."""
+    session_id, _ = completed_session
+    give_up = timedelta(seconds=get_settings().EVALUATION_STALE_GIVE_UP_SECONDS)
+    await _age(db_session, session_id, updated=stale_after * 2, created=give_up * 2)
+    queue = _RecordingQueue()
+
+    outcome = await reconcile_stale_reports(queue)
+
+    assert outcome.abandoned == 1
+    assert outcome.requeued == 0
+    assert queue.jobs == []
+    report = await _report(db_session, session_id)
+    await db_session.refresh(report)
+    assert report.status is ReportStatus.FAILED
+
+
+async def test_a_queue_that_is_still_down_leaves_the_report_stale(
+    completed_session, db_session, stale_after
+):
+    """No touch on a failed enqueue: the next sweep must retry immediately."""
+    session_id, _ = completed_session
+    await _age(db_session, session_id, updated=stale_after * 2)
+
+    failing = await reconcile_stale_reports(_RecordingQueue(fail=True))
+    recovered = _RecordingQueue()
+    retried = await reconcile_stale_reports(recovered)
+
+    assert failing.requeued == 0
+    assert retried.requeued == 1
+    assert len(recovered.jobs) == 1
+
+
+async def test_reconciliation_survives_an_unreachable_database(monkeypatch):
+    """It runs on a cron; raising would take the sweep down until a restart."""
+
+    def _boom():
+        raise ConnectionError("database is not up yet")
+
+    monkeypatch.setattr(evaluation_worker, "AsyncSessionFactory", _boom)
+
+    outcome = await reconcile_stale_reports(_RecordingQueue())
+
+    assert not outcome
 
 
 # -- Route behaviour -----------------------------------------------------------

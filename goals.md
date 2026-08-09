@@ -217,17 +217,44 @@ What is left, roughly in order of value:
 PII masking closed 2026-08-09; see the Discovery section for what it does and
 what it deliberately does not.
 
-1. **Stale-report reconciliation** — a Redis restart drops queued jobs and
-   nothing ever flips the orphaned reports, so they sit PENDING forever and the
-   UI spins. `app/main.py` runs `recover_stale_reports()` only when there is no
-   Redis pool, which is right for an API restart and wrong for a Redis one.
-   Fix: an age-thresholded sweep on an arq cron, re-enqueueing rather than
-   failing. Verified live; the same cron is the obvious home for the expired
-   token pruning below.
-2. **Remaining Discovery items** — production RAG, query rewriting / prompt
+Stale-report reconciliation closed 2026-08-09; see below.
+
+1. **Remaining Discovery items** — production RAG, query rewriting / prompt
    injection, and the frontend treating every error as a logout.
-3. **Phase 4 roadmap** — production RAG, multi-provider, streaming.
-4. **Phase 3 leftovers** — no coverage threshold, no dependency scanning.
+2. **Phase 4 roadmap** — production RAG, multi-provider, streaming.
+3. **Phase 3 leftovers** — no coverage threshold, no dependency scanning.
+
+### Stale-report reconciliation — ✅ COMPLETE (2026-08-09)
+A Redis restart dropped the queued jobs and nothing ever moved the orphaned
+reports, so they sat PENDING forever and the UI polled a spinner that would
+never resolve. `app/main.py` runs `recover_stale_reports()` only when there is
+*no* Redis pool — right for an API restart, and exactly wrong for a Redis one.
+
+`reconcile_stale_reports()` is the queued counterpart: an arq cron
+(`reconcile_reports` in `app/worker.py`, every 10 minutes, `run_at_startup`)
+re-queues rather than fails, because with a queue the work is recoverable.
+
+What the design turns on:
+- **Staleness is measured from `updated_at`,** which the evaluation moves at
+  every state change. A slow job has therefore touched its row recently and is
+  left alone. `EVALUATION_STALE_AFTER_SECONDS` (1800) must stay above
+  `EVALUATION_MAX_TRIES × EVALUATION_JOB_TIMEOUT_SECONDS` (900) or the sweep
+  re-queues live work and two workers score the same session. A test asserts
+  the inequality rather than trusting the comment.
+- **A re-queued report has its `updated_at` written explicitly.** PENDING →
+  PENDING is not a change, so SQLAlchemy emits no UPDATE and the row stays
+  stale — which would re-queue it on *every* sweep from then on. That is the
+  one bug in here that would have looked like it was working.
+- **`EVALUATION_STALE_GIVE_UP_SECONDS` (86400) bounds the retrying.**
+  Re-queueing is right for work that lost its job and wrong for a session that
+  can never be evaluated; past a day the report is failed, which is at least
+  visible and has a retry button.
+- **A failed enqueue leaves the row untouched** so the next sweep retries at
+  once instead of waiting out the window again.
+- **`unique=True` on the cron** — with several worker replicas, only one sweeps
+  per tick. Without it each orphan is queued once per replica.
+
+The same cron is now the obvious home for the expired-token pruning below.
 
 ### Operational follow-ups (not code)
 - **Rotate the Gemini API key.** It was written to logs in cleartext before `e0e1ad6`.
@@ -239,8 +266,9 @@ what it deliberately does not.
   provider requires one.
 - **Nothing prunes expired tokens.** `refresh_tokens` grows a row per login and
   `one_time_tokens` one per reset or verification email. Both repositories have
-  a `delete_expired()`; nothing calls it. The arq worker is the obvious home for
-  a cron job now that it exists.
+  a `delete_expired()`; nothing calls it. The worker now has a `cron_jobs` list
+  (`app/worker.py`), so this is a second entry beside `reconcile_reports`
+  rather than any new machinery.
 - **Rate-limit defaults sit above the account ceiling** (20/user/hour vs 20/day
   for the whole free-tier account). Lower them, or move off the free tier.
 - **Move rate-limit counters to Redis** before running more than one API replica

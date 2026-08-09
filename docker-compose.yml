@@ -44,8 +44,10 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     # Jobs are the only thing in here and the report row is the durable record,
-    # so an AOF/RDB volume would buy very little. Losing the queue costs at most
-    # the evaluations in flight, which resolve to a visible FAILED report.
+    # so an AOF/RDB volume would buy very little: a restart drops the queue, and
+    # the worker's reconciliation cron finds the reports that lost their job and
+    # queues them again. The cost is the delay before that sweep notices, not
+    # the work.
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]

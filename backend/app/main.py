@@ -51,6 +51,9 @@ async def lifespan(app: FastAPI):
     # Only meaningful without a queue. With one, a PENDING or GENERATING report
     # has a real job waiting in Redis, and failing those rows on boot would
     # destroy live work -- every deploy would kill the evaluations in flight.
+    # The queued case is handled instead by the worker's reconciliation cron
+    # (app/worker.py), which waits out an age threshold and re-queues; that is
+    # what catches the reports a *Redis* restart orphans, which this cannot.
     if app.state.arq_pool is None:
         await recover_stale_reports()
 

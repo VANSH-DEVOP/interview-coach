@@ -12,6 +12,7 @@ import pytest
 
 from app import worker
 from app.core.config import get_settings
+from app.services.evaluation_worker import Reconciliation
 
 
 @pytest.fixture
@@ -103,3 +104,61 @@ def test_the_registered_name_matches_what_the_api_enqueues():
     from app.services.job_queue import EVALUATE_SESSION
 
     assert worker.evaluate_session.__name__ == EVALUATE_SESSION
+
+
+# -- The reconciliation cron ---------------------------------------------------
+
+
+class _FakePool:
+    """Stands in for ctx["redis"], recording what the sweep queued."""
+
+    def __init__(self) -> None:
+        self.jobs: list[tuple] = []
+
+    async def enqueue_job(self, name, *args):
+        self.jobs.append((name, *args))
+
+
+async def test_the_cron_enqueues_under_the_name_the_worker_consumes(monkeypatch):
+    """The sweep is pointless if it queues jobs nothing will pick up."""
+    pool = _FakePool()
+    session_id, user_id = uuid.uuid4(), uuid.uuid4()
+
+    async def fake_reconcile(enqueue):
+        await enqueue(session_id, user_id)
+        return Reconciliation(requeued=1)
+
+    monkeypatch.setattr(worker, "reconcile_stale_reports", fake_reconcile)
+
+    await worker.reconcile_reports({"redis": pool})
+
+    from app.services.job_queue import EVALUATE_SESSION
+
+    # Strings, not UUIDs: the payload must not depend on the serialiser.
+    assert pool.jobs == [(EVALUATE_SESSION, str(session_id), str(user_id))]
+
+
+def test_the_reconciliation_cron_is_registered():
+    """A cron that is written but never listed does nothing at all, silently."""
+    jobs = worker.WorkerSettings.cron_jobs
+
+    assert [job.name for job in jobs] == ["cron:reconcile_reports"]
+    sweep = jobs[0]
+    # One replica per tick; several sweeping at once would queue each orphan
+    # once per replica.
+    assert sweep.unique is True
+    assert sweep.run_at_startup is True
+    assert sweep.minute == set(range(0, 60, worker.RECONCILE_EVERY_MINUTES))
+
+
+def test_the_sweep_interval_leaves_room_for_a_full_retry_cycle():
+    """The staleness window has to outlast the work it is looking for.
+
+    Below max_tries * job_timeout, the sweep re-queues evaluations that are
+    still running and two workers score the same session at once.
+    """
+    settings = get_settings()
+
+    worst_case = settings.EVALUATION_MAX_TRIES * settings.EVALUATION_JOB_TIMEOUT_SECONDS
+    assert settings.EVALUATION_STALE_AFTER_SECONDS > worst_case
+    assert settings.EVALUATION_STALE_GIVE_UP_SECONDS > settings.EVALUATION_STALE_AFTER_SECONDS

@@ -9,20 +9,31 @@ Retry policy is the whole point of the move off BackgroundTasks. A failed
 evaluation is raised, not swallowed, so arq re-queues it with backoff. Only the
 final attempt writes FAILED -- marking it earlier would show the user a dead
 report while a retry was still pending.
+
+The worker also owns the cron that reconciles orphaned reports. arq's retries
+cover a job that fails; nothing covers a job that ceases to exist, which is what
+a Redis restart does to the whole queue.
 """
 
 import logging
 import uuid
 from typing import Any
 
+from arq import cron
 from arq.connections import RedisSettings
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db.session import engine
-from app.services.evaluation_worker import evaluate, mark_failed
+from app.services.evaluation_worker import evaluate, mark_failed, reconcile_stale_reports
+from app.services.job_queue import EVALUATE_SESSION
 
 logger = logging.getLogger(__name__)
+
+# How often to sweep for orphaned reports. The recovery window a user actually
+# experiences is this plus EVALUATION_STALE_AFTER_SECONDS, so there is no point
+# sweeping much more often than the staleness threshold changes anything.
+RECONCILE_EVERY_MINUTES = 10
 
 
 async def evaluate_session(ctx: dict[str, Any], session_id: str, user_id: str) -> None:
@@ -51,6 +62,23 @@ async def evaluate_session(ctx: dict[str, Any], session_id: str, user_id: str) -
         # with a retry button. Re-raising would only add a traceback arq has
         # already given up on.
         await mark_failed(sid)
+
+
+async def reconcile_reports(ctx: dict[str, Any]) -> None:
+    """Put orphaned evaluations back on the queue. Registered as a cron job.
+
+    The pool to enqueue on is arq's own, handed to every job as `ctx["redis"]`;
+    opening a second one here would be a connection the worker already has.
+    """
+
+    async def _enqueue(session_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        # Same argument shape as app/services/job_queue.py: ids cross the queue
+        # as strings so the payload does not depend on the serialiser.
+        await ctx["redis"].enqueue_job(EVALUATE_SESSION, str(session_id), str(user_id))
+
+    outcome = await reconcile_stale_reports(_enqueue)
+    if not outcome:
+        logger.debug("Reconciliation swept: nothing orphaned.")
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -90,6 +118,24 @@ class WorkerSettings:
     """arq entry point. These attributes are read by arq as Worker kwargs."""
 
     functions = [evaluate_session]
+    cron_jobs = [
+        cron(
+            reconcile_reports,
+            minute=set(range(0, 60, RECONCILE_EVERY_MINUTES)),
+            second=0,
+            # A worker restart is one of the moments reports get orphaned, and
+            # waiting up to ten minutes to look would be for nothing. The age
+            # threshold is what protects live work, not the schedule.
+            run_at_startup=True,
+            # arq's default. Stated because it is load-bearing: with several
+            # worker replicas, only one runs each tick. Without it every replica
+            # would sweep, and the same session would be queued N times.
+            unique=True,
+            # One tick, no retries. A failure inside the sweep is already
+            # swallowed and logged, and the next tick is the retry.
+            max_tries=1,
+        )
+    ]
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = _redis_settings()

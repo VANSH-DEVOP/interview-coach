@@ -60,6 +60,21 @@ class Settings(BaseSettings):
     # backs off between them, which is what makes this worth having over a
     # single in-process attempt.
     EVALUATION_MAX_TRIES: int = 3
+    # How long a report may sit PENDING or GENERATING, measured from its last
+    # state change, before the worker's cron treats it as orphaned and queues it
+    # again. A Redis restart drops the queued jobs and nothing else ever flips
+    # those rows, so without this the report spins forever.
+    #
+    # This must stay comfortably above EVALUATION_MAX_TRIES *
+    # EVALUATION_JOB_TIMEOUT_SECONDS plus arq's backoff between attempts.
+    # Below that, the sweep re-queues work that is still running and two workers
+    # evaluate the same session at once.
+    EVALUATION_STALE_AFTER_SECONDS: int = 1800
+    # Past this age, stop re-queueing and mark the report FAILED. Re-queueing is
+    # right for work that lost its job; it is wrong for a session that cannot be
+    # evaluated at all, which would otherwise be retried every sweep forever.
+    # FAILED is at least visible, and the UI offers a retry.
+    EVALUATION_STALE_GIVE_UP_SECONDS: int = 86400
 
     # -- AI provider ----------------------------------------------------------
     # When set, the Gemini-backed generator/evaluator activate; otherwise the

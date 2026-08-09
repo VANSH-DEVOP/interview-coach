@@ -89,6 +89,22 @@ ChromaDB persists to `CHROMA_PATH` (default `/var/lib/interviewpilot/chroma`, ba
 
 Deeper docs: `backend/AI_INTEGRATION.md`, `backend/RAG_IMPLEMENTATION.md`.
 
+## Evaluation queue
+
+Completing an interview writes a `PENDING` report and hands the scoring off; the client polls. Two runners, chosen per request by whether `app.state.arq_pool` exists (`app/services/job_queue.py`):
+
+- **arq over Redis** (`REDIS_URL` set) — durable, retried with backoff. Needs the separate `worker` service (`arq app.worker.WorkerSettings`), which shares the image and the code and serves no HTTP.
+- **`BackgroundTasks` in-process** — no Redis, no durability. Keeps `uvicorn app.main:app` and the test suite working with nothing else running; a fallback here is counted and surfaced at `/health` alongside the AI ones.
+
+The two runners want opposite things from a failure, which is why `evaluation_worker.py` has two entry points: `evaluate` raises (arq needs that to retry; only the final attempt writes `FAILED`), `run_evaluation` swallows and marks `FAILED` itself (an exception in a BackgroundTask vanishes into the event loop).
+
+Reports orphaned by a restart are recovered on two different paths, and they must not be swapped:
+
+- **No queue** → `recover_stale_reports()` on API startup flips everything `PENDING`/`GENERATING` to `FAILED`. Gated in the lifespan to the no-Redis case — with a queue those rows have live jobs behind them and failing them on boot would kill every evaluation in flight on every deploy.
+- **Queue** → `reconcile_stale_reports()` on an arq cron every 10 minutes (`RECONCILE_EVERY_MINUTES`) re-queues instead of failing, since the work is recoverable. This is what catches a *Redis* restart, which drops the whole queue. Staleness is measured from `updated_at`, so a merely slow job is left alone; `EVALUATION_STALE_AFTER_SECONDS` must stay above `EVALUATION_MAX_TRIES × EVALUATION_JOB_TIMEOUT_SECONDS` or the sweep double-evaluates live work. Past `EVALUATION_STALE_GIVE_UP_SECONDS` a report is failed rather than retried forever. The cron is `unique=True`: with several worker replicas only one sweeps per tick.
+
+The arq function name is matched as a *string* (`EVALUATE_SESSION` in `job_queue.py` vs the callable in `worker.py`). Renaming one side alone gives jobs that enqueue cleanly and never run — `tests/test_worker.py` guards it.
+
 ## Storage
 
 `app/services/storage/` mirrors the same pattern: `StorageService` ABC, `LocalStorageService` impl, `get_storage_service()` factory keyed on `STORAGE_BACKEND`. Blobs live outside the code tree (`STORAGE_LOCAL_PATH`, a named Docker volume). Uploads use opaque keys `resumes/{user_id}/{uuid}.pdf`; the client filename is metadata only. Swapping to S3/R2 should touch this package only.
