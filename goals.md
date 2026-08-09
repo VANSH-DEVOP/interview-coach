@@ -55,13 +55,21 @@ Scaffolding exists; the feature does not.
 - [x] **Pagination controls.** (`6896e83`) Shared `Pagination` component wired into interviews and reports. Verified: 7 records at size=3 paginate with zero overlap.
 - [x] **Expose `/interviews/{id}/reevaluate`** (`6896e83`) — "Re-evaluate" on the session report page. Updates the report in place (same id).
 ---
-## Phase 2 — Auth & account completeness (P1)
-- [ ] **Logout endpoint.** Logout is client-side cookie clearing only (`use-auth.ts:63`); refresh tokens stay valid until expiry.
-- [ ] **Refresh-token rotation + revocation list.** Called out in the README's hardening backlog.
-- [ ] **Change password.** The profile page only edits `full_name` (`user_service.py:12`).
-- [ ] **Forgot / reset password** (needs an email transport — none exists yet).
-- [ ] **Email verification.**
-- [ ] **Account deletion** (cascade resumes, sessions, reports, blobs, and vector index).
+## Phase 2 — Auth & account completeness (P1) — ✅ COMPLETE (2026-08-09)
+- [x] **Refresh-token rotation + revocation list.** (`e2c2779`) `refresh_tokens` records every issued token by `jti`; refreshing revokes the presented one and issues a new pair. **Reuse detection:** a token that decodes but is already revoked was rotated away by the legitimate client, so presenting it means replay — every token for the account is revoked. Tested that the password still works afterwards, since a lockout that locks out the owner is worse than the problem.
+  - **Postgres, not Redis**, even though Redis is now in the stack: it runs with no persistence by design, and a revocation list that forgets on restart silently un-revokes everything.
+  - Only the `jti` is stored — it sits inside a signature nobody can forge without `JWT_SECRET_KEY`, so there is nothing to hash.
+  - **One-off cost:** refresh tokens issued before this have no row and stop working on deploy. Not migratable — they live in clients' cookies and their `jti`s were never recorded.
+- [x] **Logout endpoint.** (`e2c2779`) `POST /auth/logout`, with `everywhere` for lost devices. Takes **no access token**: logging out is exactly what a client does when its access token has expired. Quiet about invalid tokens — the client wanted to be signed out and now is, and erroring only teaches clients to ignore the response.
+  - Frontend bug caught in passing: `onClick={logout}` would have handed React's click event to the `everywhere` parameter and signed users out of every device, with the types raising no objection.
+- [x] **Change password.** (`5df9eb9`) Requires the current password even though the caller is authenticated, and returns a **new token pair** — revoking every session is most of the point, but doing so would otherwise sign out the device making the change. A failed attempt revokes nothing, so a wrong guess is not a denial of service against the account.
+- [x] **Email transport.** (`9a15c7d`) `EmailSender` seam mirroring `StorageService`. `log` backend is the default (no credentials, links readable in the console) and is **refused in production**, where printing reset links publishes account-takeover links to anyone reading the logs. `smtp` is one class covering SES/SendGrid/Mailgun/Postmark/Gmail, so choosing a provider is `.env`, not code.
+  - **Decision (2026-08-09):** SMTP over per-vendor REST clients. Portability beats delivery events here; revisit if per-message tracking is ever wanted.
+- [x] **Forgot / reset password.** (`435c334`) Always 202, for known and unknown addresses alike — a 404 turns a leaked address list into a membership check against this service. Delivery failures are swallowed for the same reason, and the frontend swallows its own errors so it doesn't reintroduce the signal. Completing a reset revokes every session (reset is what you press when you think an attacker is *in* the account) and marks the address verified (receiving the link proves mailbox control).
+- [x] **Email verification.** (`435c334`) Recorded, surfaced in a dismissible banner, and **gating nothing** — the default backend writes to a log, so gating login or features would make a fresh local or demo deployment unusable. Pinned by tests, because adding an `email_verified` check is an easy and very disruptive change to make without noticing.
+- [x] **Account deletion.** (`d9faa9c`) Hard delete, password required. The cascade covers the rows; the work is the two stores Postgres cannot reach — resume blobs and the vector index — which hold the actual CV text. Purged **before** the rows: they are not transactional, and failing that way round leaves recoverable orphans rather than an account that vanished while its resume text stayed in the vector store.
+- Shared token machinery: `one_time_tokens` serves reset and verification with a `purpose` discriminator; only a SHA-256 hash is stored (SHA-256 not bcrypt — these are 32 random bytes, so guessing is not the threat). Both crossover directions are tested, since one table for two purposes is exactly how a signup link ends up changing a password.
+- **291 → 374 backend tests.**
 ---
 ## Phase 3 — Production readiness (P1/P2)
 ### Testing (P1) — ✅ COMPLETE (2026-08-08)
@@ -167,15 +175,26 @@ have — an unpinned range guarantees CI and developers eventually disagree.
 Phases 0, 1, and 3 (testing/CI) are closed as of 2026-08-08. The durable
 evaluation queue landed 2026-08-09.
 
+Phase 2 (auth & account completeness) closed the same day.
+
 What is left, roughly in order of value:
-1. **Phase 2 — auth completeness.** Logout, refresh-token rotation/revocation,
-   change password. The `jti` claim is already minted and never used.
-2. **Discovery items below** — PII masking before sending to the LLM is a real
+1. **Discovery items below** — PII masking before sending to the LLM is a real
    security gap, not a nice-to-have.
-3. **Phase 4 roadmap** — production RAG, multi-provider, streaming.
+2. **Phase 4 roadmap** — production RAG, multi-provider, streaming.
+3. **Phase 3 leftovers** — no coverage threshold, no dependency scanning.
 
 ### Operational follow-ups (not code)
 - **Rotate the Gemini API key.** It was written to logs in cleartext before `e0e1ad6`.
+- **Pick an email provider before any real deployment.** `EMAIL_BACKEND=log` is
+  the default and is *refused* in production, so a production start will fail
+  until `SMTP_HOST` and credentials are set. That is deliberate — the
+  alternative is reset links in the logs — but it means the first production
+  boot needs the SMTP settings ready, and a verified sender domain if the
+  provider requires one.
+- **Nothing prunes expired tokens.** `refresh_tokens` grows a row per login and
+  `one_time_tokens` one per reset or verification email. Both repositories have
+  a `delete_expired()`; nothing calls it. The arq worker is the obvious home for
+  a cron job now that it exists.
 - **Rate-limit defaults sit above the account ceiling** (20/user/hour vs 20/day
   for the whole free-tier account). Lower them, or move off the free tier.
 - **Move rate-limit counters to Redis** before running more than one API replica

@@ -158,5 +158,22 @@ container must not produce a green build.
 ## 7. Security Notes (MVP → production hardening)
 
 - Passwords: bcrypt. Tokens: short-lived access + 7-day refresh JWTs.
+- **Refresh tokens rotate and are revocable.** Every issued token is recorded by
+  `jti`; refreshing revokes the old one. Presenting an already-rotated token is
+  treated as replay and revokes every session for that account. Logout, password
+  change, password reset and account deletion all end sessions server-side.
+- **Password reset does not reveal who has an account.** `/auth/forgot-password`
+  answers identically for known and unknown addresses, and delivery failures are
+  swallowed rather than surfaced, because an error that only appears for real
+  accounts is the same oracle by another route.
+- **Email verification gates nothing** by design — the default email backend
+  writes to a log, so gating would make a fresh local or demo deployment
+  unusable. It is recorded and surfaced, not enforced.
+- **`EMAIL_BACKEND=log` is refused in production.** It prints reset links in
+  full. A production start fails until SMTP is configured; that is deliberate.
 - Resume uploads: content-type allowlist, 5 MiB cap, opaque storage keys, path-traversal protection.
-- Hardening backlog: httpOnly cookie BFF for tokens, refresh-token rotation/revocation list, rate limiting, CSP headers.
+- Account deletion is a hard delete, and clears the resume blobs and the vector
+  index as well as the database rows — the database cascade cannot reach either.
+- Hardening backlog: httpOnly cookie BFF for tokens, CSP headers, and a scheduled
+  purge of expired token rows (`delete_expired()` exists on both token
+  repositories; nothing calls it yet).
