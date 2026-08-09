@@ -12,7 +12,16 @@ from app.core.config import get_settings
 from app.db.base import Base
 
 config = context.config
-if config.config_file_name is not None:
+# `fileConfig` rebuilds logging from alembic.ini: it replaces the root handlers
+# and, by default, disables every logger that already exists. That is what you
+# want from the CLI and actively harmful in-process -- the test suite runs these
+# migrations from a fixture, and having them tear out pytest's log-capture
+# handler made an unrelated assertion on log output fail, but only when a
+# database-backed test had run first.
+#
+# Callers that embed Alembic opt out via config.attributes; the CLI passes
+# nothing and keeps the old behaviour.
+if config.config_file_name is not None and config.attributes.get("configure_logging", True):
     fileConfig(config.config_file_name)
 
 # Application settings are the default source of the URL, but a caller that has

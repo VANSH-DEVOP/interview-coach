@@ -98,6 +98,31 @@ class Settings(BaseSettings):
     RATE_LIMIT_UPLOAD_REQUESTS: int = 10
     RATE_LIMIT_UPLOAD_WINDOW_SECONDS: int = 3600
 
+    # -- Email -----------------------------------------------------------------
+    # "log" writes messages to the log instead of sending them: no credentials,
+    # nothing leaves the machine, and reset links are copy-pasteable out of the
+    # console. It is refused in production, where printing those links is a
+    # credential leak (see app/services/email/__init__.py).
+    # "smtp" is the real transport and works with SES, SendGrid, Mailgun,
+    # Postmark or Gmail -- changing provider is host/port/credentials here.
+    EMAIL_BACKEND: Literal["log", "smtp"] = "log"
+    EMAIL_FROM: str = "InterviewPilot AI <no-reply@interviewpilot.local>"
+    SMTP_HOST: str = "localhost"
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str | None = None
+    SMTP_PASSWORD: str | None = None
+    # Implicit TLS (usually port 465) vs STARTTLS (usually 587). Mutually
+    # exclusive; setting both is rejected at startup.
+    SMTP_USE_TLS: bool = False
+    SMTP_START_TLS: bool = True
+    SMTP_TIMEOUT_SECONDS: int = 10
+
+    # Absolute base URL for links in emails. Emails are read outside the
+    # browser session, so a relative path is meaningless -- and this cannot be
+    # derived from the request, because a Host header is attacker-controlled and
+    # would let someone point a password-reset link at their own domain.
+    FRONTEND_BASE_URL: str = "http://localhost:3000"
+
     # -- Storage ---------------------------------------------------------------
     # "local" today; "s3" | "r2" | "minio" are future providers. The value is
     # consumed only by the storage factory (app.services.storage).

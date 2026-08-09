@@ -20,6 +20,7 @@ dependencies = [
     "chromadb>=0.5",
     "numpy>=1.24",
     "arq>=0.26",
+    "aiosmtplib>=3.0",
 ]
 
 [project.optional-dependencies]

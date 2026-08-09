@@ -116,6 +116,11 @@ def _run_migrations(url: str) -> None:
     config = Config(str(BACKEND_DIR / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
     config.set_main_option("sqlalchemy.url", url)
+    # Leave the test session's logging alone. Alembic's env.py otherwise calls
+    # fileConfig, which replaces the root handlers -- including pytest's capture
+    # handler -- so any later test asserting on log output silently sees
+    # nothing. See the note in alembic/env.py.
+    config.attributes["configure_logging"] = False
     command.upgrade(config, "head")
 
 
