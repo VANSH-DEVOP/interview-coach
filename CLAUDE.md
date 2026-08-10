@@ -156,6 +156,18 @@ A request retrieves through `HybridRetriever` (`app/services/ai/retrieval.py`), 
 
 `retrieve_scored()` returns ranks and which half found each candidate; `retrieve_context()` is the string wrapper. Sessionless callers (the evaluation worker) can still use `RAGService` directly and get dense-only retrieval.
 
+### Embedding cache
+
+The free tier allows **20 requests per day for the whole account**, and indexing one resume costs one embedding call per chunk — nine for the benchmark fixture. Two uploads exhausted the day, and `reprocess()`, which exists to rebuild an index, was unaffordable. With `REDIS_URL` set, re-indexing unchanged text costs nothing.
+
+- **Keyed on `sha256` of the *redacted* text**, plus the model. That is why the cache sits inside `EmbeddingService` rather than wrapping it: hashing before redaction would put a fingerprint of the candidate's name and email in Redis, and would miss for two resumes differing only in redacted identifiers.
+- **The model is in the key**, so changing `GEMINI_EMBEDDING_MODEL` is safe — old entries are never read again rather than silently mixed into an index where distances would mean nothing.
+- **Not scoped per user.** The vector is a pure function of the text, so a hit tells the requester nothing they did not supply.
+- **Values are packed float32** (`array('f')`), 12 KiB for a 3072-dim vector against ~60 KiB as JSON. Precision loss is far below what cosine similarity distinguishes.
+- **Every failure is swallowed and counted as `cache_errors`, separately from `cache_misses`.** An unreachable cache behaves exactly like a cold one — the request succeeds at full provider price — and reading the two as one number is how you keep paying while believing the cache works.
+
+Deliberately **not** cached: generated question sets. Caching them would save one call per interview and make a candidate practising the same role twice get the identical interview, which trades the product for the quota. The cost is overwhelmingly in indexing, not generation.
+
 ## Rate limiting
 
 `app/core/rate_limit.py` is a pure mechanism — fixed-window counters, no knowledge of routes or users. The wiring (`limit_by_ip`, `limit_by_user`) lives in `app/api/deps.py` with the rest of the DI, and **must stay there**: that module deliberately has no `from __future__ import annotations`, because FastAPI has to resolve `Annotated[User, Depends(...)]` at runtime. When these dependencies lived in `core/`, FastAPI silently reinterpreted `user` as a *query parameter* and every AI route answered 422.

@@ -90,6 +90,15 @@ class Settings(BaseSettings):
     # in varies between embedding models, so a tight value tuned against one
     # silently discards good chunks under another.
     RAG_MAX_DISTANCE: float = 1.0
+    # How long a cached embedding vector lives, when REDIS_URL is set. An
+    # embedding is a pure function of (model, text), so entries never go stale
+    # -- the TTL exists to reclaim space, not to guard correctness, and a
+    # model change is already a different key. Thirty days.
+    #
+    # Why this matters: the free tier allows 20 requests per day for the whole
+    # account and indexing one resume costs one call per chunk, so two uploads
+    # exhausted the day. Re-indexing unchanged text is now free.
+    EMBEDDING_CACHE_TTL_SECONDS: int = 60 * 60 * 24 * 30
     # Google retires model IDs, and a retired ID is a 404 that the fallback
     # layer hides. Keep these overridable so a rotation is an env change, and
     # check `GET /v1beta/models` for the key in use before changing a default.

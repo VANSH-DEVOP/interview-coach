@@ -7,7 +7,7 @@ session → repositories → services. Routes contain zero construction logic.
 import logging
 import uuid
 from functools import lru_cache
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import jwt as pyjwt
 from fastapi import BackgroundTasks, Depends, Request
@@ -44,6 +44,9 @@ from app.services.report_service import ReportService
 from app.services.resume_service import ResumeService
 from app.services.storage import get_storage_service
 from app.services.user_service import UserService
+
+if TYPE_CHECKING:
+    from app.services.ai.embedding_cache import EmbeddingCache
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +86,32 @@ def get_one_time_token_repository(session: DbSession) -> OneTimeTokenRepository:
 
 # -- AI Services ------------------------------------------------------------------
 @lru_cache(maxsize=1)
+def _embedding_cache() -> "EmbeddingCache | None":
+    """The embedding cache, or None when there is no Redis to put it in.
+
+    Its own client rather than the arq pool: this is process-wide and lives as
+    long as the cached RAG service, while the arq pool is opened by the
+    lifespan for queue work. `from_url` connects lazily, so building it here
+    costs nothing until the first lookup, and a Redis that is configured but
+    down degrades to full-price embedding rather than failing the request.
+    """
+    settings = get_settings()
+    if not settings.REDIS_URL:
+        logger.info("REDIS_URL is not set; embeddings will not be cached.")
+        return None
+
+    from redis.asyncio import Redis
+
+    from app.services.ai.embedding_cache import EmbeddingCache
+
+    return EmbeddingCache(
+        Redis.from_url(settings.REDIS_URL),
+        model=settings.GEMINI_EMBEDDING_MODEL,
+        ttl_seconds=settings.EMBEDDING_CACHE_TTL_SECONDS,
+    )
+
+
+@lru_cache(maxsize=1)
 def get_rag_service() -> "RAGService | None":
     """Get the RAG service if a Gemini API key is configured.
 
@@ -102,7 +131,9 @@ def get_rag_service() -> "RAGService | None":
 
     try:
         embedding_service = EmbeddingService(
-            settings.GEMINI_API_KEY, model=settings.GEMINI_EMBEDDING_MODEL
+            settings.GEMINI_API_KEY,
+            model=settings.GEMINI_EMBEDDING_MODEL,
+            cache=_embedding_cache(),
         )
         vector_store = get_vector_store(persist_directory=settings.CHROMA_PATH)
     except Exception as exc:

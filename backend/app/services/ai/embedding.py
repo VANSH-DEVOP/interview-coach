@@ -9,10 +9,14 @@ call site can omit it.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import httpx
 
 from app.services.ai.masking import Redactor, default_redactor
+
+if TYPE_CHECKING:
+    from app.services.ai.embedding_cache import EmbeddingCache
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +36,16 @@ class EmbeddingService:
         *,
         model: str = "models/gemini-embedding-001",
         timeout: float = 30.0,
+        cache: "EmbeddingCache | None" = None,
     ) -> None:
         self._api_key = api_key
         self._timeout = timeout
         self._model = model
+        # Consulted *after* redaction, which is why the cache is in here rather
+        # than wrapped around this class: hashing the raw text would put a
+        # fingerprint of the candidate's name and email in Redis, and would
+        # miss for two resumes that differ only in redacted identifiers.
+        self._cache = cache
 
     async def embed_text(
         self, text: str, *, redactor: Redactor | None = None
@@ -61,6 +71,19 @@ class EmbeddingService:
         # carry no meaning a retrieval could use anyway.
         redacted = (redactor or default_redactor()).redact(text)
 
+        if self._cache is not None:
+            cached = await self._cache.get(redacted)
+            if cached is not None:
+                return cached
+
+        embedding = await self._embed_uncached(redacted)
+
+        if self._cache is not None:
+            await self._cache.set(redacted, embedding)
+        return embedding
+
+    async def _embed_uncached(self, redacted: str) -> list[float]:
+        """The provider call itself. Takes already-redacted text."""
         url = f"{_BASE_URL}/{self._model}:embedContent"
         body = {
             "model": self._model,

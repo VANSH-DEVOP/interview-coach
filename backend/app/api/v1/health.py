@@ -102,6 +102,12 @@ class RagHealth(BaseModel):
     dense_only: int
     sparse_only: int
     agreed: int
+    # Embedding cache. `cache_errors` climbing while hits stay flat means the
+    # cache is unreachable and every index is paying full provider price --
+    # which looks identical to a cold cache from every other angle.
+    cache_hits: int
+    cache_misses: int
+    cache_errors: int
     last_at: str | None = None
 
 

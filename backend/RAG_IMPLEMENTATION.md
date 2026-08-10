@@ -19,9 +19,10 @@ This ensures questions are **personalized** to the candidate's actual experience
 > fixed-size chunking with a duplicating overlap, one embedding HTTP call per
 > chunk, no caching, no relevance threshold. `goals.md` holds a six-part plan
 > to take it further. **Parts 1 (observability + benchmark), 2 (chunks as rows
-> + structure-aware chunking) and 3 (hybrid retrieval) have landed**; see
-> below. What is still missing: caching (part 4), query rewriting and
-> prompt-injection defence (part 5), multi-step orchestration (part 6).
+> + structure-aware chunking), 3 (hybrid retrieval) and 4 (embedding cache)
+> have landed**; see
+> below. What is still missing: query rewriting and prompt-injection defence
+> (part 5), multi-step orchestration (part 6).
 
 ## Observability
 
@@ -108,6 +109,30 @@ matches candidates *by text*. One `retrieval_text()` in
 `app/models/resume_chunk.py` serves both; if they diverged, nothing would ever
 be recognised as found by both halves and the only symptom would be `agreed`
 stuck at zero.
+
+## Embedding cache
+
+The free tier allows **20 requests per day for the whole account**, and indexing
+one resume costs one embedding call per chunk — nine for the benchmark fixture,
+more for a real CV. So two uploads exhausted the day, and `reprocess()`, whose
+entire job is rebuilding an index, was unaffordable in practice.
+
+With `REDIS_URL` set, `EmbeddingCache` stores each vector under
+`embed:{model}:{sha256(redacted_text)}`. Measured end to end: indexing the
+fixture resume costs 9 provider calls, re-indexing it costs **0**.
+
+| Decision | Why |
+|---|---|
+| Key on the **redacted** text | The cache lives inside `EmbeddingService`, after redaction. Hashing earlier would fingerprint the candidate's name and email in Redis, and would miss for two resumes differing only in redacted identifiers |
+| Model in the key | Vectors from different models are not comparable. Changing `GEMINI_EMBEDDING_MODEL` makes old entries unreachable instead of silently mixing incompatible vectors into one index |
+| Not scoped per user | The vector is a pure function of the text; a hit tells the requester nothing they did not supply. Scoping would break cross-resume reuse for no gain |
+| Packed float32 | 12 KiB for 3072 dimensions against ~60 KiB of JSON. The precision lost is far below anything cosine similarity can distinguish |
+| Failures swallowed, counted apart | An unreachable cache behaves exactly like a cold one — the request succeeds at full price. `cache_errors` climbing while `cache_hits` stays flat is the only sign |
+| Empty vectors not stored | `embed_batch` represents a per-chunk failure as `[]`; caching one would make that failure permanent for the life of the entry |
+
+**Question sets are deliberately not cached.** It would save one call per
+interview and make a candidate who practises the same role twice sit the
+identical interview both times. The quota is spent on indexing, not generation.
 
 ## Architecture
 

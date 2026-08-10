@@ -385,10 +385,8 @@ than dropping the resume.
   see below.
 - [x] **Part 2 — Chunks become real data.** Done; see below.
 - [x] **Part 3 — Hybrid retrieval.** Done; see below.
-- [ ] **Part 4 — Caching in Redis.** Content-hash → embedding vector, so
-  re-uploading or re-indexing a resume is free; question sets reused for an
-  identical (resume, role, spec). The part that actually addresses the quota
-  ceiling.
+- [x] **Part 4 — Caching in Redis.** Done; see below. Question-set caching
+  deliberately dropped, with reasons.
 - [ ] **Part 5 — Query rewriting + prompt-injection defence.** Expand the role
   into a real retrieval query; for follow-ups extract the claim worth probing
   rather than embedding the raw answer. Treat resume text as untrusted:
@@ -555,6 +553,46 @@ Two limits stated plainly:
   the stand-in through hash collisions — "underwater basket weaving" still
   matches one chunk at 0.91. The honest claim is that the prompt is no longer
   padded to k.
+
+### Part 4 — embedding cache ✅ COMPLETE (2026-08-10)
+The arithmetic that justifies it: the free tier allows **20 requests per day for
+the whole account**, and indexing one resume costs one embedding call per chunk
+— nine for the benchmark fixture. Two uploads exhausted the day, and
+`reprocess()`, whose entire purpose is rebuilding an index, was unaffordable.
+
+Measured live against a real Redis: indexing the fixture resume costs **9
+provider calls, re-indexing costs 0**.
+
+- **Keyed on `sha256` of the redacted text, plus the model.** The cache lives
+  inside `EmbeddingService` rather than wrapping it, because redaction happens
+  at the provider boundary: hashing earlier would put a fingerprint of the
+  candidate's name and email in Redis, and would miss for two resumes
+  differing only in the identifiers redaction removes.
+- **The model in the key is what makes a model change safe** — old vectors
+  become unreachable rather than being mixed into an index where distances
+  would mean nothing.
+- **Not scoped per user.** The vector is a pure function of the text, so a hit
+  tells the requester nothing they did not already supply.
+- **Packed float32**: 12 KiB per 3072-dim vector against ~60 KiB as JSON, and
+  the precision lost is far below what cosine similarity can distinguish.
+- **`cache_errors` is counted separately from `cache_misses`.** An unreachable
+  cache behaves exactly like a cold one — every request succeeds, at full
+  provider price — so folding the two into one number is how you keep paying
+  while believing the cache works. Both are on `/health`.
+- **Empty vectors are not stored.** `embed_batch` represents a per-chunk
+  failure as `[]`, and caching one would make that failure permanent for the
+  life of the entry.
+
+**Question-set caching was dropped, and the plan above was wrong to include
+it.** It would save one call per interview — against nine or more for indexing
+— and would make a candidate practising the same role twice sit the identical
+interview both times. That trades the product's core value for a rounding error
+in the quota. Raised before building and confirmed.
+
+Incidental confirmation that part 1 was worth doing: the first live run of this
+check failed because `CHROMA_PATH` defaults to an unwritable path outside
+Docker. That is the exact silent degradation part 1's availability recording
+exists to surface, and it surfaced.
 
 ### Why testing came before the rest of Phase 1
 Three genuine bugs were invisible to the test suite and only surfaced by driving

@@ -87,6 +87,14 @@ class _State:
     sparse_only: int = 0
     agreed: int = 0
 
+    # Embedding cache. `cache_errors` is counted apart from `cache_misses`
+    # because an unreachable cache behaves exactly like a cold one -- the
+    # request still succeeds, at full provider cost -- and reading the two as
+    # one number is how you keep paying while believing the cache works.
+    cache_hits: int = 0
+    cache_misses: int = 0
+    cache_errors: int = 0
+
     recent: list[dict[str, object]] = field(default_factory=list)
 
 
@@ -157,6 +165,16 @@ def record_full_text_fallback(*, purpose: Purpose, reason: str) -> None:
         "rag.full_text_fallback",
         extra={"rag": {"purpose": purpose, "reason": reason}},
     )
+
+
+def record_cache(*, outcome: Literal["hit", "miss", "error"]) -> None:
+    """Record one embedding-cache lookup."""
+    if outcome == "hit":
+        _state.cache_hits += 1
+    elif outcome == "miss":
+        _state.cache_misses += 1
+    else:
+        _state.cache_errors += 1
 
 
 def record_fusion(
@@ -249,6 +267,9 @@ def snapshot() -> dict[str, object]:
         "dense_only": _state.dense_only,
         "sparse_only": _state.sparse_only,
         "agreed": _state.agreed,
+        "cache_hits": _state.cache_hits,
+        "cache_misses": _state.cache_misses,
+        "cache_errors": _state.cache_errors,
         "last_at": _state.last_at,
     }
 
