@@ -27,6 +27,7 @@ from app.repositories.report_repository import ReportRepository
 from app.repositories.resume_repository import ResumeRepository
 from app.repositories.user_repository import UserRepository
 from app.services.account_service import AccountService
+from app.services.ai import retrieval_metrics
 from app.services.ai.base import get_question_generator
 from app.services.ai.embedding import EmbeddingService
 from app.services.ai.masking import redactor_for
@@ -90,6 +91,7 @@ def get_rag_service() -> "RAGService | None":
     settings = get_settings()
     if not settings.GEMINI_API_KEY:
         logger.info("GEMINI_API_KEY is not set; RAG disabled.")
+        retrieval_metrics.record_availability(enabled=False, reason="no_api_key")
         return None
 
     try:
@@ -97,18 +99,25 @@ def get_rag_service() -> "RAGService | None":
             settings.GEMINI_API_KEY, model=settings.GEMINI_EMBEDDING_MODEL
         )
         vector_store = get_vector_store(persist_directory=settings.CHROMA_PATH)
-    except Exception:
+    except Exception as exc:
         # Disable RAG rather than fail the request -- but say so. Silently
         # returning None here is how a broken index looks identical to a
-        # working one from the outside.
+        # working one from the outside. The result is cached, so this warning
+        # is logged once per process; /health keeps it readable afterwards,
+        # which matters because the usual cause is an unwritable CHROMA_PATH
+        # outside Docker and the symptom is merely "the questions feel generic".
         logger.warning(
             "RAG initialisation failed (path=%s); continuing without retrieval.",
             settings.CHROMA_PATH,
             exc_info=True,
         )
+        retrieval_metrics.record_availability(
+            enabled=False, reason=f"init_failed: {type(exc).__name__}"
+        )
         return None
 
     logger.info("RAG enabled (chroma_path=%s).", settings.CHROMA_PATH)
+    retrieval_metrics.record_availability(enabled=True)
     return RAGService(embedding_service, vector_store)
 
 

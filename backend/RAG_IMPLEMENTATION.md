@@ -13,6 +13,57 @@ InterviewPilot now implements **Retrieval-Augmented Generation (RAG)** for intel
 
 This ensures questions are **personalized** to the candidate's actual experience, skills, and background.
 
+> **Status, 2026-08-10.** The above describes the shipped pipeline, which is a
+> working first version rather than a finished one — dense-only retrieval,
+> fixed-size chunking with a duplicating overlap, one embedding HTTP call per
+> chunk, no caching, no relevance threshold. `goals.md` holds a six-part plan
+> to take it further, and **Part 1 (observability + a retrieval benchmark) has
+> landed**; see "Observability" below. Read the plan before changing anything
+> here, because Parts 2 and 3 replace the chunker and the retriever outright.
+
+## Observability
+
+Retrieval fails quietly: when it is disabled, empty, or broken, question
+generation falls back to `resume_text[:4000]` and still produces plausible
+questions. The interview works and is simply no longer personalised, which is
+why this needed instrumenting before it needed improving.
+
+`app/services/ai/retrieval_metrics.py` records it, and `/health` reports it
+under `rag`:
+
+| Field | Reads as |
+|---|---|
+| `enabled`, `disabled_reason` | RAG off entirely — `no_api_key`, or `init_failed` when `CHROMA_PATH` is not writable (the usual case outside Docker) |
+| `retrievals`, `hits`, `empty`, `failed` | Attempts and how they ended. `empty` means the resume was never indexed; `failed` means retrieval broke |
+| `full_text_fallbacks` | Prompts built from truncated resume text. Climbing while `retrievals` stays flat means retrieval is never reached at all |
+| `last_best_distance` | Cosine distance of the closest chunk on the last hit. Near 1.0 means the "hit" returned junk |
+| `chunks_produced` vs `chunks_embedded` | A gap means the resume is indexed partially, and answers from a partial index for ever after |
+
+Each retrieval also emits one structured log line (`rag.retrieval`) with the
+same fields, so "how often does retrieval return nothing" is a query rather
+than an afternoon of grepping.
+
+## Benchmark
+
+`tests/test_retrieval_eval.py` scores a fixed resume against twelve queries
+using real (in-memory) Chroma and deterministic lexical embeddings, so it runs
+in CI with no API key and no quota. Two tiers:
+
+- **lexical** — queries sharing words with the resume. Pinned at recall@3 1.00
+  / precision@1 1.00. This is a machinery check: chunk → embed → store → filter
+  by resume → rank → assemble.
+- **semantic** — the same six facts asked the way an interviewer would ask
+  them. Currently recall@3 0.50 / precision@1 0.17. This is the gap the hybrid
+  retrieval work exists to close.
+
+The semantic score is a *lower bound* on the real system: a real embedding
+model handles paraphrase and the deterministic stand-in cannot, so treat it as
+roughly what the sparse half of a hybrid retriever contributes. Judging real
+semantic quality still needs `test_rag_pipeline.py` and a live key.
+
+Baselines are asserted as floors. Raise them when a change earns it; never
+lower one to make the suite pass.
+
 ## Architecture
 
 ```

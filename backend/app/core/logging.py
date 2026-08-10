@@ -8,6 +8,12 @@ from typing import Any
 
 from app.core.config import get_settings
 
+# Everything logging puts on a LogRecord itself. Anything else on a record came
+# from a caller's `extra=`, which is what we want to emit.
+_BUILTIN_RECORD_FIELDS = frozenset(
+    logging.LogRecord("", 0, "", 0, "", None, None).__dict__
+) | {"message", "asctime", "taskName"}
+
 
 class JsonFormatter(logging.Formatter):
     """Emit log records as single-line JSON for log aggregation systems."""
@@ -21,10 +27,12 @@ class JsonFormatter(logging.Formatter):
         }
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
-        # Attach structured extras (e.g. request_id) when provided.
-        for key in ("request_id", "method", "path", "status_code", "duration_ms"):
-            value = getattr(record, key, None)
-            if value is not None:
+        # Every `extra=` field, rather than a fixed list of them. The list this
+        # replaces named five keys, so any structured field added later was
+        # dropped silently -- the caller passes it, the formatter discards it,
+        # and nothing reports the loss.
+        for key, value in record.__dict__.items():
+            if key not in _BUILTIN_RECORD_FIELDS and not key.startswith("_") and value is not None:
                 payload[key] = value
         return json.dumps(payload, default=str)
 

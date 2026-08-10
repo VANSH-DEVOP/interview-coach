@@ -11,12 +11,14 @@ import logging
 import uuid
 from typing import TYPE_CHECKING
 
+from app.services.ai import retrieval_metrics
 from app.services.ai.base import GeneratedQuestion, InterviewSpec, QuestionGenerator
 from app.services.ai.gemini_client import GeminiClient
 
 if TYPE_CHECKING:
     from app.services.ai.masking import Redactor
     from app.services.ai.rag import RAGService
+    from app.services.ai.retrieval_metrics import Purpose
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,7 @@ class GeminiQuestionGenerator(QuestionGenerator):
         resume_text: str | None,
         resume_id: uuid.UUID | None,
         query: str,
+        purpose: "Purpose" = "initial_questions",
     ) -> tuple[str, bool]:
         """Build the resume section of a prompt, preferring RAG over truncation.
 
@@ -87,12 +90,14 @@ class GeminiQuestionGenerator(QuestionGenerator):
         which are in the database but absent from Chroma. Dropping the resume
         entirely there would silently de-personalise the interview.
         """
+        reason = "no_resume_text"
         if self._rag_service and resume_id and resume_text:
             try:
                 context = await self._rag_service.retrieve_context(
-                    resume_id, query, top_k=5, redactor=self._redactor
+                    resume_id, query, top_k=5, redactor=self._redactor, purpose=purpose
                 )
             except Exception as e:
+                reason = "retrieval_failed"
                 logger.warning(
                     "RAG retrieval failed for resume %s; using truncated resume text: %s",
                     resume_id,
@@ -106,12 +111,23 @@ class GeminiQuestionGenerator(QuestionGenerator):
                         resume_id,
                     )
                     return f"\nCandidate resume excerpt (most relevant):\n{context}", True
+                reason = "not_indexed"
                 logger.info(
                     "No indexed chunks for resume %s; using truncated resume text.",
                     resume_id,
                 )
+        elif resume_text:
+            # Retrieval was never asked. Either there is no RAG service at all
+            # (no key, or Chroma disabled itself) or the session has no resume
+            # attached. Both produce the same de-personalised prompt as a failed
+            # retrieval, which is why they are counted together.
+            reason = "retrieval_unavailable" if resume_id else "no_resume_attached"
 
         if resume_text:
+            # Counted here rather than in RAGService: this is the only place
+            # that sees every route to a truncated-resume prompt, including the
+            # ones where retrieval was never called.
+            retrieval_metrics.record_full_text_fallback(purpose=purpose, reason=reason)
             return f"\nCandidate resume excerpt:\n{resume_text[:4000]}", False
         return "", False
 
@@ -130,6 +146,7 @@ class GeminiQuestionGenerator(QuestionGenerator):
             resume_text=resume_text,
             resume_id=resume_id,
             query=f"skills and experience relevant to {role}",
+            purpose="initial_questions",
         )
 
         type_instruction = _TYPE_INSTRUCTIONS.get(
@@ -200,6 +217,7 @@ class GeminiQuestionGenerator(QuestionGenerator):
             resume_text=resume_text,
             resume_id=resume_id,
             query=f"{question}\n{answer}",
+            purpose="follow_up",
         )
 
         prompt = (

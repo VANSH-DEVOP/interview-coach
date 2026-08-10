@@ -109,6 +109,41 @@ async def test_a_dead_worker_degrades_the_health_status(client, stub_db_up, arq_
     assert body["status"] == "degraded"
 
 
+# -- Retrieval -----------------------------------------------------------------
+
+
+async def test_rag_reports_why_retrieval_is_off(client, stub_db_up):
+    """The quietest degradation in the system: with RAG off, questions are still
+    generated from truncated resume text and look fine."""
+    from app.services.ai import retrieval_metrics
+
+    retrieval_metrics.reset()
+    retrieval_metrics.record_availability(enabled=False, reason="init_failed: OSError")
+    try:
+        body = (await client.get("/api/v1/health")).json()
+    finally:
+        retrieval_metrics.reset()
+
+    assert body["rag"]["enabled"] is False
+    # The usual cause is an unwritable CHROMA_PATH, and the only other symptom
+    # is that the questions feel generic.
+    assert body["rag"]["disabled_reason"] == "init_failed: OSError"
+    # Reported, not acted on -- the app is still answering correctly.
+    assert body["status"] == "ok"
+
+
+async def test_rag_counters_start_at_zero_and_are_reported(client, stub_db_up):
+    from app.services.ai import retrieval_metrics
+
+    retrieval_metrics.reset()
+    body = (await client.get("/api/v1/health")).json()
+
+    rag = body["rag"]
+    assert rag["enabled"] is None  # nothing has tried to build the service yet
+    assert (rag["retrievals"], rag["hits"], rag["full_text_fallbacks"]) == (0, 0, 0)
+    assert rag["avg_ms"] is None
+
+
 async def test_an_unreadable_heartbeat_is_unknown_not_dead(client, stub_db_up, arq_pool):
     """Redis going away is already reported as a queue fallback. Calling the
     worker dead on top of that would be a second alarm for one fault, and a

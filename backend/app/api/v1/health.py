@@ -9,7 +9,7 @@ from app.core import rate_limit
 from app.core.config import get_settings
 from app.db.session import get_session
 from app.services import job_queue
-from app.services.ai import degradation
+from app.services.ai import degradation, retrieval_metrics
 
 router = APIRouter(tags=["system"])
 
@@ -63,6 +63,40 @@ class WorkerHealthResponse(BaseModel):
     detail: str | None = None
 
 
+class RagHealth(BaseModel):
+    """Whether retrieval is on, and whether it is finding anything.
+
+    Retrieval degrades more quietly than anything else here: when it is off,
+    empty, or broken, question generation falls back to the first 4000
+    characters of the resume and produces plausible questions anyway. The
+    interview works; it is just no longer personalised.
+
+    `enabled` is null until something has tried to build the service.
+    `disabled_reason` is usually `no_api_key`, or an `init_failed` when
+    CHROMA_PATH is not writable -- the normal case outside Docker.
+
+    `full_text_fallbacks` climbing while `retrievals` stays flat means
+    retrieval is not being reached at all. `hits` climbing with a
+    `last_best_distance` near 1.0 or above means it is being reached and
+    returning junk, which counts as a hit and is not one.
+    """
+
+    enabled: bool | None = None
+    disabled_reason: str | None = None
+    retrievals: int
+    hits: int
+    empty: int
+    failed: int
+    full_text_fallbacks: int
+    avg_ms: float | None = None
+    max_ms: float | None = None
+    last_best_distance: float | None = None
+    resumes_indexed: int
+    chunks_produced: int
+    chunks_embedded: int
+    last_at: str | None = None
+
+
 class RateLimitHealth(BaseModel):
     """Where the counters live, and whether they stayed there.
 
@@ -87,6 +121,7 @@ class HealthResponse(BaseModel):
     queue: QueueHealth
     worker: WorkerHealthResponse
     rate_limit: RateLimitHealth
+    rag: RagHealth
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -121,6 +156,9 @@ async def health(
         worker=WorkerHealthResponse(
             expected=worker_expected, alive=worker.alive, detail=worker.detail
         ),
+        # Reported, not acted on, for the same reason as the AI block: the app
+        # is still returning correct answers, they are merely less tailored.
+        rag=RagHealth.model_validate(retrieval_metrics.snapshot()),
         # Reported, not acted on: a per-process counter still bounds abuse, it
         # just bounds it once per replica.
         rate_limit=RateLimitHealth.model_validate(

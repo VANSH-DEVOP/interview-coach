@@ -43,10 +43,14 @@ class _FakeRag:
         self._error = error
         self.queries: list[str] = []
         self.redactors: list[object] = []
+        self.purposes: list[str] = []
 
-    async def retrieve_context(self, resume_id, query, top_k=5, *, redactor=None):
+    async def retrieve_context(
+        self, resume_id, query, top_k=5, *, redactor=None, purpose="initial_questions"
+    ):
         self.queries.append(query)
         self.redactors.append(redactor)
+        self.purposes.append(purpose)
         if self._error is not None:
             raise self._error
         return self._context
@@ -164,6 +168,10 @@ async def test_gemini_follow_up_retrieves_rag_context_keyed_on_the_answer():
     # Retrieval is keyed on the exchange, not the target role.
     assert "I optimised our cache." in rag.queries[0]
     assert "Tell me about performance work." in rag.queries[0]
+    # Tagged so follow-up retrieval can be told from initial-question retrieval
+    # in the metrics: the two run very different queries and their hit rates
+    # have to be readable apart.
+    assert rag.purposes[0] == "follow_up"
     # Retrieved context is preferred over the raw text.
     assert "Led the caching migration in 2024." in client.prompts[0]
     assert "raw resume text" not in client.prompts[0]

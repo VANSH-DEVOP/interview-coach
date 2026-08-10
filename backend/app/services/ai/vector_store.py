@@ -54,11 +54,23 @@ class VectorStore(ABC):
 class ChromaVectorStore(VectorStore):
     """ChromaDB-backed vector store for resume embeddings."""
 
-    def __init__(self, persist_directory: Path | str | None = None):
+    def __init__(
+        self,
+        persist_directory: Path | str | None = None,
+        *,
+        collection_name: str = "resumes",
+    ):
         """Initialize ChromaDB client.
 
         Args:
             persist_directory: Path to persist ChromaDB data. If None, uses in-memory.
+            collection_name: Which collection to read and write. Overridden only
+                by tests. An in-memory client is *not* private: chromadb keeps
+                one system per settings object for the life of the process, so
+                every `EphemeralClient()` shares the same collections. Two tests
+                indexing vectors of different dimensions into the default name
+                is then a hard error from whichever runs second, and which one
+                that is depends on collection order.
         """
         # Imported here, not at module scope: chromadb pulls in a heavy dependency
         # tree, and `app.api.deps` imports this module transitively. A module-level
@@ -82,7 +94,7 @@ class ChromaVectorStore(VectorStore):
 
             # Get or create collection for resumes
             self._collection = self._client.get_or_create_collection(
-                name="resumes",
+                name=collection_name,
                 metadata={"hnsw:space": "cosine"},
             )
             logger.info("ChromaDB vector store initialized")

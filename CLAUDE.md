@@ -77,7 +77,22 @@ Flow: `ResumeService.upload()` parses PDF/DOCX (`resume_parser.py`) → sets `Re
 
 ChromaDB persists to `CHROMA_PATH` (default `/var/lib/interviewpilot/chroma`, backed by the `chroma_data` Docker volume). `get_rag_service()` is `@lru_cache`d, so tests that vary settings must call `get_rag_service.cache_clear()`. Outside Docker that default path is usually unwritable — RAG then logs a warning and disables itself, so set `CHROMA_PATH` to something local when running the backend directly.
 
-Deeper docs: `backend/AI_INTEGRATION.md`, `backend/RAG_IMPLEMENTATION.md`.
+### Retrieval observability
+
+Retrieval degrades more quietly than anything else here: off, empty, or broken, generation falls back to `resume_text[:4000]` and produces plausible questions anyway — the interview works, it is just no longer personalised. `degradation.py` does **not** count these; none of them are provider failures.
+
+`app/services/ai/retrieval_metrics.py` is where that becomes visible, reported in `/health`'s `rag` block:
+
+- `enabled` / `disabled_reason` — recorded by `get_rag_service()`. Usually `no_api_key`, or an `init_failed` when `CHROMA_PATH` is unwritable, which is the normal case outside Docker.
+- `full_text_fallbacks` climbing while `retrievals` stays flat → retrieval is never being reached. Counted in `gemini.py::_resume_context`, the only place that sees every route to a truncated-resume prompt.
+- `hits` climbing with `last_best_distance` near 1.0 → retrieval is reached and returning junk. A hit is not a success.
+- Indexing records produced-vs-embedded, in a `finally`, so a run that chunked 30 and embedded 4 is visible — that resume answers from a partial index for ever after.
+
+Any new structured field goes through `extra=`; `JsonFormatter` emits every non-standard record attribute, so nothing needs registering.
+
+**The retrieval benchmark** is `tests/test_retrieval_eval.py`: one fixture resume, twelve queries, real (in-memory) Chroma, deterministic lexical embeddings. Two tiers — lexical queries pin the machinery at 1.00, semantic ones sit at recall@3 0.50 / precision@1 0.17 and are the number the hybrid-search work has to move. Baselines are floors: raise them when a change earns it, and never lower one to make a suite pass.
+
+Deeper docs: `backend/AI_INTEGRATION.md`, `backend/RAG_IMPLEMENTATION.md`. The six-part production-RAG plan lives in `goals.md`.
 
 ## Evaluation queue
 

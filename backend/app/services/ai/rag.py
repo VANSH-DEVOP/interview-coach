@@ -6,8 +6,11 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from app.services.ai import retrieval_metrics
+
 if TYPE_CHECKING:
     from app.services.ai.masking import Redactor
+    from app.services.ai.retrieval_metrics import Purpose
 
 logger = logging.getLogger(__name__)
 
@@ -98,43 +101,60 @@ class RAGService:
         Raises:
             RuntimeError: If indexing fails.
         """
+        produced = 0
+        embedded = 0
         try:
-            # Chunk the resume
-            chunks = TextChunker.chunk_text(resume_text)
-            if not chunks:
-                logger.warning(f"No chunks generated for resume {resume_id}")
-                return 0
+            with retrieval_metrics.timed() as elapsed:
+                # Chunk the resume
+                chunks = TextChunker.chunk_text(resume_text)
+                produced = len(chunks)
+                if not chunks:
+                    logger.warning(f"No chunks generated for resume {resume_id}")
+                    return 0
 
-            logger.info(f"Chunked resume {resume_id} into {len(chunks)} pieces")
+                logger.info(f"Chunked resume {resume_id} into {len(chunks)} pieces")
 
-            # Generate embeddings for chunks
-            embeddings = await self._embedding_service.embed_batch(
-                chunks, redactor=redactor
-            )
+                # Generate embeddings for chunks
+                embeddings = await self._embedding_service.embed_batch(
+                    chunks, redactor=redactor
+                )
 
-            # Filter out failed embeddings
-            valid_chunks = [
-                (chunk, embedding)
-                for chunk, embedding in zip(chunks, embeddings)
-                if embedding
-            ]
+                # Filter out failed embeddings
+                valid_chunks = [
+                    (chunk, embedding)
+                    for chunk, embedding in zip(chunks, embeddings)
+                    if embedding
+                ]
 
-            if not valid_chunks:
-                raise RuntimeError(f"Failed to embed any chunks for resume {resume_id}")
+                if not valid_chunks:
+                    raise RuntimeError(f"Failed to embed any chunks for resume {resume_id}")
 
-            chunks_only = [chunk for chunk, _ in valid_chunks]
-            embeddings_only = [embedding for _, embedding in valid_chunks]
+                chunks_only = [chunk for chunk, _ in valid_chunks]
+                embeddings_only = [embedding for _, embedding in valid_chunks]
+                embedded = len(chunks_only)
 
-            # Store in vector store
-            await self._vector_store.add_resume(
-                resume_id, user_id, chunks_only, embeddings_only
-            )
+                # Store in vector store
+                await self._vector_store.add_resume(
+                    resume_id, user_id, chunks_only, embeddings_only
+                )
 
-            logger.info(f"Successfully indexed {len(chunks_only)} chunks for resume {resume_id}")
-            return len(chunks_only)
+                logger.info(
+                    f"Successfully indexed {len(chunks_only)} chunks for resume {resume_id}"
+                )
+            return embedded
         except Exception as e:
             logger.error(f"Failed to index resume {resume_id}: {e}")
             raise RuntimeError(f"Resume indexing failed: {e}") from e
+        finally:
+            # Recorded even when indexing raised: a resume that produced 30
+            # chunks and embedded 4 is the case worth seeing, and it reaches
+            # here by both paths.
+            if produced:
+                retrieval_metrics.record_indexing(
+                    chunks_produced=produced,
+                    chunks_embedded=embedded,
+                    duration_ms=elapsed[0],
+                )
 
     async def retrieve_context(
         self,
@@ -143,6 +163,7 @@ class RAGService:
         top_k: int = 5,
         *,
         redactor: "Redactor | None" = None,
+        purpose: "Purpose" = "initial_questions",
     ) -> str:
         """Retrieve relevant resume context for a query.
 
@@ -161,34 +182,55 @@ class RAGService:
             RuntimeError: If retrieval fails.
         """
         try:
-            # Embed the query
-            query_embedding = await self._embedding_service.embed_text(
-                query, redactor=redactor
-            )
+            with retrieval_metrics.timed() as elapsed:
+                # Embed the query
+                query_embedding = await self._embedding_service.embed_text(
+                    query, redactor=redactor
+                )
 
-            # Retrieve similar chunks
-            results = await self._vector_store.retrieve_relevant(
-                query_embedding, resume_id, top_k=top_k
-            )
-
-            if not results.documents:
-                logger.warning(f"No relevant chunks found for query in resume {resume_id}")
-                return ""
-
-            # Combine chunks into context, removing overlap markers
-            context_parts = []
-            for doc in results.documents:
-                cleaned = doc.replace("\n...\n", "\n")
-                context_parts.append(cleaned)
-
-            context = "\n\n".join(context_parts)
-            logger.debug(
-                f"Retrieved {len(results.documents)} chunks for query in resume {resume_id}"
-            )
-            return context
+                # Retrieve similar chunks
+                results = await self._vector_store.retrieve_relevant(
+                    query_embedding, resume_id, top_k=top_k
+                )
         except Exception as e:
+            retrieval_metrics.record_retrieval(
+                purpose=purpose,
+                outcome="failed",
+                duration_ms=elapsed[0],
+                error=f"{type(e).__name__}: {e}",
+            )
             logger.error(f"Failed to retrieve context for resume {resume_id}: {e}")
             raise RuntimeError(f"Context retrieval failed: {e}") from e
+
+        if not results.documents:
+            retrieval_metrics.record_retrieval(
+                purpose=purpose, outcome="empty", duration_ms=elapsed[0]
+            )
+            logger.warning(f"No relevant chunks found for query in resume {resume_id}")
+            return ""
+
+        # The best distance is recorded, not just the count: five chunks at
+        # cosine distance 1.9 are five irrelevant chunks, and a "hit" that is
+        # only ever counted looks exactly like a good one.
+        retrieval_metrics.record_retrieval(
+            purpose=purpose,
+            outcome="hit",
+            duration_ms=elapsed[0],
+            chunks=len(results.documents),
+            best_distance=min(results.distances) if results.distances else None,
+        )
+
+        # Combine chunks into context, removing overlap markers
+        context_parts = []
+        for doc in results.documents:
+            cleaned = doc.replace("\n...\n", "\n")
+            context_parts.append(cleaned)
+
+        context = "\n\n".join(context_parts)
+        logger.debug(
+            f"Retrieved {len(results.documents)} chunks for query in resume {resume_id}"
+        )
+        return context
 
     async def delete_index(self, resume_id: uuid.UUID) -> None:
         """Delete indexed resume from vector store.
