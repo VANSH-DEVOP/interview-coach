@@ -247,10 +247,9 @@ Stale-report reconciliation closed 2026-08-09. Token pruning, worker liveness
 and shared rate-limit counters closed 2026-08-10; the frontend's
 every-error-is-a-logout problem closed the same day. All are described below.
 
-1. **Production RAG** — hybrid search, the LangChain/LangGraph pipeline in the
-   Discovery section, caching and metrics. The largest remaining item, and it
-   absorbs semantic chunking, embedding caching, LangGraph orchestration and
-   query rewriting / prompt-injection defence.
+1. **LangChain provider layer + LangSmith tracing** — next session, planned
+   2026-08-11. See "NEXT SESSION" below. RAG parts 1-5 are done; part 6
+   (orchestration) waits behind it.
 2. **Observability** — AI-call telemetry (latency, token spend, fallback rate)
    is the cheapest real win; the counters exist and `/health` already has the
    shape for it. Error reporting is what the worker's missing restart alarm
@@ -393,7 +392,9 @@ than dropping the resume.
   deliberately dropped, with reasons.
 - [x] **Part 5 — Query rewriting + prompt-injection defence.** Done; see below.
 - [ ] **Part 6 — Multi-step orchestration.** Extract skills → generate →
-  critique/refine. Decide on LangGraph here, with the graph's real shape known.
+  critique/refine. **Deferred behind the LangChain/LangSmith work below**
+  (decided 2026-08-10), since the orchestration should be written against
+  whatever the provider layer ends up being rather than rewritten after it.
 
 ### Part 1 — retrieval observability + benchmark ✅ COMPLETE (2026-08-10)
 Retrieval is the AI path that fails *quietly and usefully*: when it is off,
@@ -642,6 +643,74 @@ Two things stated rather than assumed:
   tests cover prompt *construction*, which is what can be checked without a
   provider; whether a given model honours a fence is a question about the model
   and belongs in a live-key probe.
+
+## NEXT SESSION — LangChain (provider layer) + LangSmith (2026-08-11)
+Decided 2026-08-10. Supersedes the "hand-rolled, revisit at part 6" decision
+for the **provider layer only**. Retrieval, chunking and metrics stay ours.
+
+### Why this and not a full adoption
+Measured before deciding: the AI layer is **2,770 lines across 14 modules**,
+imported by 5 modules outside it, covered by **255 tests in 22 files**. A full
+LangChain rewrite replaces ~1,150 of those lines and reworks 100-150 tests,
+and would require re-proving the redaction boundary and re-baselining the
+benchmark. The provider layer is where LangChain actually pays and where the
+least hard-won local knowledge lives, so it goes first and alone.
+
+What it buys, in order of value here:
+1. **Provider churn is absorbed upstream.** Google retiring model IDs has
+   broken this project twice — `gemini-1.5-flash`, and `models/embedding-001`
+   silently for weeks. An integration package takes that hit.
+2. **Multi-provider (Claude, GPT)** becomes config rather than another
+   hand-rolled client. Already on the Phase 4 roadmap.
+3. **Streaming** via LCEL `.astream()`. Also on the roadmap.
+4. **Native tracing** into LangSmith.
+
+### Order of work
+1. **LangSmith tracing first, on the code as it stands.** The `langsmith` SDK's
+   `@traceable` decorator works on plain functions — no LangChain required — so
+   observability can land in hours and independently of everything below.
+   *Verify the SDK surface against current docs; this is from memory.*
+2. Swap `gemini_client.py` → `ChatGoogleGenerativeAI` (`langchain-google-genai`).
+3. Swap `embedding.py` → `GoogleGenerativeAIEmbeddings`, and decide on the
+   cache (see the trap below).
+4. **Then** reassess whether the retriever is worth moving. Separate decision,
+   not a commitment made today.
+5. Part 6 orchestration, written against whatever the layer became.
+
+### Constraints that must survive — each cost real debugging to find
+- **Redaction at the provider boundary** (`masking.py`). It sits *inside* the
+  client and the embedding service precisely so no call site can omit it. Under
+  LangChain that boundary moves into a wrapper or callback and has to be
+  re-established, not merely reconnected. `tests/test_masking_boundary.py` is
+  the check.
+- **The embedding cache keys on the *redacted* text.** LangChain's
+  `CacheBackedEmbeddings` keys on the raw string, which would put a
+  fingerprint of the candidate's name and email in Redis and would miss for
+  two resumes differing only in redacted identifiers. Either override the key
+  derivation or keep ours.
+- **The API key must not reach the logs.** Sent today as an `x-goog-api-key`
+  header rather than `?key=`, with httpx/httpcore pinned to WARNING, after it
+  was found in cleartext in the logs. Check what the integration does with it.
+- **Fallback counting.** LCEL `.with_fallbacks()` does not increment
+  `degradation.record_fallback()`, and that counter is the only thing between a
+  dead provider and a system that looks fine.
+- **Model IDs are verified against `GET /v1beta/models`** before any switch.
+
+### LangSmith: decide before it leaves local dev
+A trace contains the prompt, and the prompt contains resume text. Routing
+traces to a hosted service sends a third party exactly what `masking.py` exists
+to withhold. Either self-host, or apply the redactor to traces too. Add
+`LANGSMITH_API_KEY` / tracing toggles through `app/core/config.py` like every
+other setting, and default them off.
+
+### Acceptance criteria
+- All **581 tests** pass, no skips.
+- Benchmark baselines unchanged: lexical 1.00/1.00, semantic 0.50/0.33,
+  follow-up rewritten 1.00/1.00. Re-baseline only with the reason recorded.
+- `/health` `rag` block still populated, including `cache_errors` apart from
+  `cache_misses`.
+- No API key in captured logs at root DEBUG.
+- Green at **each** step, not only at the end.
 
 ### Why testing came before the rest of Phase 1
 Three genuine bugs were invisible to the test suite and only surfaced by driving
