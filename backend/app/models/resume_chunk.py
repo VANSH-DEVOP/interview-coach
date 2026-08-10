@@ -21,14 +21,41 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import (
+    Computed,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.dialects.postgresql import TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
     from app.models.resume import Resume
+
+
+def retrieval_text(section: str | None, content: str) -> str:
+    """The exact string a chunk is embedded as and retrieved as.
+
+    One function, used by both the chunker and this model, because hybrid
+    retrieval fuses the two halves *by chunk text*: the dense side returns what
+    Chroma stored at index time, the keyword side rebuilds it from these
+    columns, and if the two formattings differ by so much as a newline then no
+    chunk is ever recognised as found by both. Rank fusion would still return a
+    list, the `agreed` counter would sit at zero, and the fused results would
+    quietly be the union of two half-length lists instead of a consensus.
+
+    The heading is prepended rather than stored in `content` so that every
+    chunk says which part of the resume it came from, including the third chunk
+    of a long EXPERIENCE section.
+    """
+    return f"{section}\n{content}" if section else content
 
 
 class ResumeChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -41,6 +68,9 @@ class ResumeChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         # carries no index of its own, since a leading-column prefix of this
         # one serves the same queries.
         UniqueConstraint("resume_id", "ordinal", name="resume_ordinal"),
+        # The keyword half of hybrid retrieval. GIN over the generated tsvector
+        # below; without it every search sequentially scans the table.
+        Index("ix_resume_chunks_search", "search_vector", postgresql_using="gin"),
     )
 
     resume_id: Mapped[uuid.UUID] = mapped_column(
@@ -69,5 +99,26 @@ class ResumeChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # When this chunk's embedding reached the vector store. NULL means the text
     # is here and retrieval cannot see it.
     embedded_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # Postgres keeps this in step with `section` and `content`; nothing in the
+    # application writes it. Generated rather than maintained by a trigger or
+    # by the repository, so a chunk written by any path -- a migration, a
+    # backfill, psql -- is searchable, and the column cannot drift out of date.
+    #
+    # The section heading is indexed alongside the body so that "education" as
+    # a query term reaches the EDUCATION block even when the word appears
+    # nowhere in the text under it.
+    search_vector: Mapped[str] = mapped_column(
+        TSVECTOR,
+        Computed(
+            text("to_tsvector('english', coalesce(section, '') || ' ' || content)"),
+            persisted=True,
+        ),
+        nullable=False,
+    )
 
     resume: Mapped["Resume"] = relationship(back_populates="chunks")
+
+    @property
+    def retrieval_text(self) -> str:
+        """What this chunk was embedded as. See the module-level function."""
+        return retrieval_text(self.section, self.content)

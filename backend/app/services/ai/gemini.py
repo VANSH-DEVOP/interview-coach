@@ -17,7 +17,7 @@ from app.services.ai.gemini_client import GeminiClient
 
 if TYPE_CHECKING:
     from app.services.ai.masking import Redactor
-    from app.services.ai.rag import RAGService
+    from app.services.ai.retrieval import Retriever
     from app.services.ai.retrieval_metrics import Purpose
 
 logger = logging.getLogger(__name__)
@@ -65,11 +65,11 @@ class GeminiQuestionGenerator(QuestionGenerator):
     def __init__(
         self,
         client: GeminiClient,
-        rag_service: "RAGService | None" = None,
+        retriever: "Retriever | None" = None,
         redactor: "Redactor | None" = None,
     ) -> None:
         self._client = client
-        self._rag_service = rag_service
+        self._retriever = retriever
         # Only for retrieval: the client redacts its own prompts. Retrieval
         # embeds the query on a different HTTP call that the client never sees.
         self._redactor = redactor
@@ -91,9 +91,9 @@ class GeminiQuestionGenerator(QuestionGenerator):
         entirely there would silently de-personalise the interview.
         """
         reason = "no_resume_text"
-        if self._rag_service and resume_id and resume_text:
+        if self._retriever and resume_id and resume_text:
             try:
-                context = await self._rag_service.retrieve_context(
+                context = await self._retriever.retrieve_context(
                     resume_id, query, top_k=5, redactor=self._redactor, purpose=purpose
                 )
             except Exception as e:

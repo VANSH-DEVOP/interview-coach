@@ -33,6 +33,7 @@ from app.services.ai.base import get_question_generator
 from app.services.ai.embedding import EmbeddingService
 from app.services.ai.masking import redactor_for
 from app.services.ai.rag import RAGService
+from app.services.ai.retrieval import HybridRetriever
 from app.services.ai.vector_store import get_vector_store
 from app.services.auth_service import AuthService
 from app.services.email import get_email_sender
@@ -225,13 +226,18 @@ def get_interview_service(
     interviews: Annotated[InterviewRepository, Depends(get_interview_repository)],
     resumes: Annotated[ResumeRepository, Depends(get_resume_repository)],
     reports: Annotated[ReportRepository, Depends(get_report_repository)],
+    chunks: Annotated[ResumeChunkRepository, Depends(get_resume_chunk_repository)],
     current_user: CurrentUser,
 ) -> InterviewService:
     redactor = redactor_for(current_user.full_name)
+    # Built per request: the keyword half is a repository on this request's
+    # session, while the dense half is the process-wide client. Composing them
+    # here keeps question generation unaware that there are two.
+    retriever = HybridRetriever(get_rag_service(), chunks)
     return InterviewService(
         interviews,
         resumes,
-        get_question_generator(rag_service=get_rag_service(), redactor=redactor),
+        get_question_generator(retriever=retriever, redactor=redactor),
         reports,
     )
 

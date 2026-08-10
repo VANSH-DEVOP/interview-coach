@@ -80,7 +80,7 @@ Flow: `ResumeService.upload()` parses PDF/DOCX (`resume_parser.py`) → sets `Re
 `ResumeChunker` splits on the resume's own **section headings** (`EXPERIENCE`, `EDUCATION`, …), then packs paragraphs to ~800 chars within a section. Two rules that look like details and are not:
 
 - **Split at blank lines, never at line breaks.** Resume text arrives from a PDF hard-wrapped, so a physical line ending is a typographic accident — splitting on one cut a sentence about gRPC latency in half and the query about latency then matched neither piece.
-- **`Chunk.retrieval_text` prepends the section heading**, so the third chunk of a long EXPERIENCE section still says what it is. `content` stays clean in the database for reading and for the keyword index hybrid search will add.
+- **`retrieval_text()` prepends the section heading**, so the third chunk of a long EXPERIENCE section still says what it is. `content` stays clean in the database for reading and for the keyword index. It lives in `app/models/resume_chunk.py` and is shared by the chunker and the model **because rank fusion matches candidates by chunk text** — if the two formattings differed by a newline, no chunk would ever be recognised as found by both halves and `agreed` would sit at zero for ever.
 
 Chunks are rows in `resume_chunks` (`ResumeChunkRepository`), which is what makes re-indexing possible without re-embedding — at 20 provider requests/day, re-embedding a resume to rebuild an index is not a thing you can casually do. `embedded_at` NULL means the text is stored and the retriever cannot see it: the durable version of the produced-vs-embedded gap.
 
@@ -103,9 +103,13 @@ Retrieval degrades more quietly than anything else here: off, empty, or broken, 
 
 Any new structured field goes through `extra=`; `JsonFormatter` emits every non-standard record attribute, so nothing needs registering.
 
-**The retrieval benchmark** is `tests/test_retrieval_eval.py`: one fixture resume, twelve queries, real (in-memory) Chroma, deterministic lexical embeddings. Two tiers — lexical queries pin the machinery at 1.00/1.00, semantic ones sit at recall@3 0.67 / precision@1 0.17 and are the number the hybrid-search work has to move. Baselines are floors: raise them when a change earns it, and **never lower one to make a suite pass** — if a change drops a score, either the change or the instrument is wrong, and both have happened here.
+**The retrieval benchmark** is `tests/api/test_retrieval_eval.py`: one fixture resume, twelve queries, real (in-memory) Chroma, deterministic lexical embeddings. Two tiers — lexical queries pin the machinery at 1.00/1.00, semantic ones sit at recall@3 0.50 / precision@1 0.33. Baselines are floors: raise them when a change earns it, and **never lower one to make a suite pass** — if a change drops a score, either the change or the instrument is wrong, and both have happened here.
 
-Two traps in that harness, both hit already: the hashing trick needs enough dimensions that collisions don't decide rankings (at 512 for a 229-token vocabulary, a 46-char chunk was beating the paragraph that answered the query), and comparisons between pipeline versions must hold the embedder fixed or they measure collision luck rather than retrieval.
+Three traps in that harness, all hit already:
+
+- The hashing trick needs enough dimensions that collisions don't decide rankings — at 512 for a 229-token vocabulary, a 46-char chunk beat the paragraph that answered the query.
+- Comparisons between pipeline versions must hold the embedder fixed, or they measure collision luck rather than retrieval.
+- **Measurements without the distance cutoff are not reproducible.** A paraphrased query leaves several chunks at cosine distance exactly 1.0, and which of those ties lands in the top 3 varies between processes — the same code scored 0.50 or 0.67 run to run. Any new probe added to the benchmark must apply `RAG_MAX_DISTANCE` the way the pipeline does.
 
 Deeper docs: `backend/AI_INTEGRATION.md`, `backend/RAG_IMPLEMENTATION.md`. The six-part production-RAG plan lives in `goals.md`.
 
@@ -139,6 +143,18 @@ Both swallow their exceptions and return counts — a cron job that raises stops
 The worker writes a heartbeat to Redis every `HEALTH_CHECK_INTERVAL_SECONDS` (30; arq's default is an hour, useless for this) with a TTL just past it, and deletes it on clean shutdown — so *presence of the key is the whole signal* and nothing needs a clock. Read two ways: `GET /health`'s `worker` block (`job_queue.worker_health`), and the `worker` container's own healthcheck, `arq --check app.worker.WorkerSettings`.
 
 A missing worker flips `/health` `status` to `degraded`, unlike an AI or queue fallback. Nothing downstream covers for it: the API keeps accepting interviews and every report sits `PENDING` until a human notices. `alive` is `null`, not `false`, when the heartbeat could not be read at all (no pool, Redis unreachable) — that is already reported as a queue fallback, and the worker may be perfectly fine.
+
+### Hybrid retrieval
+
+A request retrieves through `HybridRetriever` (`app/services/ai/retrieval.py`), built per request in `deps.py` because its two halves have different lifetimes: the keyword half is a repository on the request's session, the dense half is the process-wide `RAGService`.
+
+- **Dense** — Chroma, generalises, bad at exact tokens (`gRPC`, a version number) that get averaged away inside a chunk.
+- **Sparse** — Postgres full-text over `resume_chunks.search_vector`, a generated column so nothing in the application maintains it. Query terms are ORed, not ANDed: `plainto_tsquery` would require a chunk containing *every* word of "skills and experience relevant to Senior Backend Engineer", which is no chunk. Terms are tokenised in Python and bound as a parameter — `to_tsquery` has a syntax and a candidate's answer will eventually contain a stray `&`.
+- **Fusion** — Reciprocal Rank Fusion (`fuse`), not a weighted score. Cosine distance and `ts_rank` have different ranges and neither is calibrated, so any weighted sum invents an exchange rate; RRF keeps only the orderings, which is what each half is reliable about.
+
+`RAG_MAX_DISTANCE` (default 1.0) drops dense results **strictly** beyond the cutoff — 1.0 is exactly orthogonal, so `<=` would keep precisely the chunks the cutoff exists to remove. Either half failing degrades to the other; both empty returns `""` and the generator falls back to raw resume text, counted in `full_text_fallbacks`.
+
+`retrieve_scored()` returns ranks and which half found each candidate; `retrieve_context()` is the string wrapper. Sessionless callers (the evaluation worker) can still use `RAGService` directly and get dense-only retrieval.
 
 ## Rate limiting
 

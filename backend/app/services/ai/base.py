@@ -14,7 +14,7 @@ from app.services.ai.degradation import record_fallback
 
 if TYPE_CHECKING:
     from app.services.ai.masking import Redactor
-    from app.services.ai.rag import RAGService
+    from app.services.ai.retrieval import Retriever
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,7 +170,7 @@ class FallbackQuestionGenerator(QuestionGenerator):
 
 
 def get_question_generator(
-    rag_service: "RAGService | None" = None,
+    retriever: "Retriever | None" = None,
     redactor: "Redactor | None" = None,
 ) -> QuestionGenerator:
     """Factory.
@@ -179,7 +179,9 @@ def get_question_generator(
     GEMINI_API_KEY is configured; otherwise the deterministic static generator.
 
     Args:
-        rag_service: Optional RAG service for retrieving relevant resume context.
+        retriever: Optional retriever for relevant resume context. A
+            `HybridRetriever` in a request, which needs a session for its
+            keyword half; `RAGService` alone is dense-only and works anywhere.
         redactor: Identity-aware redactor for the account holder whose resume
             this will read. Omitting it does not disable redaction -- the
             boundaries fall back to patterns alone -- it only means the
@@ -196,7 +198,7 @@ def get_question_generator(
             settings.GEMINI_API_KEY, settings.GEMINI_MODEL, redactor=redactor
         )
         return FallbackQuestionGenerator(
-            GeminiQuestionGenerator(client, rag_service=rag_service, redactor=redactor),
+            GeminiQuestionGenerator(client, retriever=retriever, redactor=redactor),
             StaticQuestionGenerator(),
         )
     return StaticQuestionGenerator()

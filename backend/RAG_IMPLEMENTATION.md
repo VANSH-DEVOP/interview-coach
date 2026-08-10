@@ -18,9 +18,10 @@ This ensures questions are **personalized** to the candidate's actual experience
 > working first version rather than a finished one — dense-only retrieval,
 > fixed-size chunking with a duplicating overlap, one embedding HTTP call per
 > chunk, no caching, no relevance threshold. `goals.md` holds a six-part plan
-> to take it further. **Parts 1 (observability + benchmark) and 2 (chunks as
-> rows + structure-aware chunking) have landed**; see below. Read the plan
-> before changing anything here, because Part 3 replaces the retriever.
+> to take it further. **Parts 1 (observability + benchmark), 2 (chunks as rows
+> + structure-aware chunking) and 3 (hybrid retrieval) have landed**; see
+> below. What is still missing: caching (part 4), query rewriting and
+> prompt-injection defence (part 5), multi-step orchestration (part 6).
 
 ## Observability
 
@@ -54,12 +55,18 @@ in CI with no API key and no quota. Two tiers:
   / precision@1 1.00. This is a machinery check: chunk → embed → store → filter
   by resume → rank → assemble.
 - **semantic** — the same six facts asked the way an interviewer would ask
-  them. Currently recall@3 0.67 / precision@1 0.17. This is the gap the hybrid
-  retrieval work exists to close.
+  them. Currently recall@3 0.50 / precision@1 0.33, asserted against the hybrid
+  retriever; the dense and sparse rows are printed alongside it for attribution.
 
-Comparisons between pipeline versions must hold the embedder fixed, or they
-measure hash-collision luck rather than retrieval. Part 2's chunker was scored
-against the old one at identical dimensions for exactly this reason.
+Two rules for anyone extending it:
+
+- **Hold the embedder fixed** when comparing pipeline versions, or the
+  comparison measures hash-collision luck rather than retrieval.
+- **Apply `RAG_MAX_DISTANCE` in any new probe.** Without the cutoff a
+  paraphrased query leaves several chunks at cosine distance exactly 1.0, and
+  which of those ties reaches the top 3 varies between processes — the same
+  code scored 0.50 on one run and 0.67 on the next, which is how part 2 came to
+  record a number that could not be reproduced.
 
 The semantic score is a *lower bound* on the real system: a real embedding
 model handles paraphrase and the deterministic stand-in cannot, so treat it as
@@ -68,6 +75,39 @@ semantic quality still needs `test_rag_pipeline.py` and a live key.
 
 Baselines are asserted as floors. Raise them when a change earns it; never
 lower one to make the suite pass.
+
+## Hybrid retrieval
+
+A request retrieves through `HybridRetriever`, which runs both halves and fuses
+them:
+
+| Half | Store | Good at | Bad at |
+|---|---|---|---|
+| Dense | Chroma vectors | paraphrase — "distributed streaming" → a Kafka paragraph | exact rare tokens, averaged away inside a chunk |
+| Sparse | Postgres `to_tsquery` over `resume_chunks.search_vector` | exact terms: `gRPC`, `Kubernetes`, version numbers | anything the query rephrases |
+
+- **Fusion is Reciprocal Rank Fusion**, not a weighted score: cosine distance
+  and `ts_rank` are not comparable, so a weighted sum would invent an exchange
+  rate between them. A chunk both halves ranked beats either half's private
+  favourite.
+- **The tsvector is a generated column.** Postgres keeps it in step with
+  `section` and `content`; nothing in the application writes it, so a chunk
+  inserted by a migration or by psql is searchable too.
+- **Query terms are ORed.** `plainto_tsquery` ANDs them, which for a query like
+  "skills and experience relevant to Senior Backend Engineer" matches no chunk.
+  Terms are tokenised in Python and bound as a parameter — `to_tsquery` has a
+  syntax and raises on a stray operator, and a candidate's answer reaches this.
+- **`RAG_MAX_DISTANCE` (default 1.0) is strict.** Cosine distance 1.0 is
+  exactly orthogonal, so `<=` would keep precisely the chunks the cutoff exists
+  to drop.
+- **Either half failing degrades to the other**, and both empty returns `""`,
+  which the generator turns into the raw-resume fallback and counts.
+
+The dense and sparse halves must format chunk text identically, because fusion
+matches candidates *by text*. One `retrieval_text()` in
+`app/models/resume_chunk.py` serves both; if they diverged, nothing would ever
+be recognised as found by both halves and the only symptom would be `agreed`
+stuck at zero.
 
 ## Architecture
 

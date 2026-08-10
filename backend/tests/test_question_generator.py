@@ -158,7 +158,7 @@ async def test_gemini_follow_up_retrieves_rag_context_keyed_on_the_answer():
     rag = _FakeRag(context="Led the caching migration in 2024.")
     resume_id = uuid.uuid4()
 
-    result = await GeminiQuestionGenerator(client, rag_service=rag).follow_up(
+    result = await GeminiQuestionGenerator(client, retriever=rag).follow_up(
         question="Tell me about performance work.",
         answer="I optimised our cache.",
         resume_text="raw resume text",
@@ -186,7 +186,7 @@ async def test_gemini_falls_back_to_raw_resume_when_nothing_is_indexed():
     client = _FakeClient(payload={"questions": [{"content": "Q", "question_type": "technical"}]})
     rag = _FakeRag(context="")
 
-    questions = await GeminiQuestionGenerator(client, rag_service=rag).initial_questions(
+    questions = await GeminiQuestionGenerator(client, retriever=rag).initial_questions(
         target_role="Backend", resume_text="raw resume text", resume_id=uuid.uuid4()
     )
 
@@ -198,7 +198,7 @@ async def test_gemini_falls_back_to_raw_resume_when_retrieval_errors():
     client = _FakeClient(payload={"questions": [{"content": "Q", "question_type": "technical"}]})
     rag = _FakeRag(error=RuntimeError("chroma down"))
 
-    questions = await GeminiQuestionGenerator(client, rag_service=rag).initial_questions(
+    questions = await GeminiQuestionGenerator(client, retriever=rag).initial_questions(
         target_role="Backend", resume_text="raw resume text", resume_id=uuid.uuid4()
     )
 

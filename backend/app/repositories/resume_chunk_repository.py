@@ -1,15 +1,36 @@
 """Queries over the retrievable pieces of a resume."""
 
+import re
 import uuid
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import Executable, delete, select, update
+from sqlalchemy import Executable, delete, func, select, update
 from sqlalchemy.engine import CursorResult
 
 from app.core.time import utcnow
 from app.models.resume_chunk import ResumeChunk
 from app.repositories.base import BaseRepository
+
+# Query text is turned into lexemes here rather than handed to Postgres whole.
+# `plainto_tsquery` ANDs every term, so "skills and experience relevant to
+# Senior Backend Engineer" would match only a chunk containing all of them --
+# which is no chunk. Retrieval wants OR with ranking by how much matched, the
+# way BM25 behaves, so the terms are joined with `|`.
+_WORD = re.compile(r"[A-Za-z0-9+#.]+")
+
+
+def _to_tsquery(query: str) -> str | None:
+    """Build an OR-of-terms tsquery from free text, or None if there is none.
+
+    Tokenising in Python keeps this safe: `to_tsquery` has a syntax and would
+    raise on a stray `&` or an unbalanced bracket in a candidate's answer,
+    which is exactly the sort of input that reaches follow-up retrieval.
+    Only word characters survive, and the result is bound as a parameter, so
+    nothing here is interpolated into SQL.
+    """
+    terms = [term for term in _WORD.findall(query) if len(term) > 1]
+    return " | ".join(terms) if terms else None
 
 
 class ResumeChunkRepository(BaseRepository[ResumeChunk]):
@@ -65,6 +86,39 @@ class ResumeChunkRepository(BaseRepository[ResumeChunk]):
             )
             .values(embedded_at=at or utcnow())
         )
+
+    async def search(
+        self, resume_id: uuid.UUID, query: str, *, limit: int = 5
+    ) -> list[tuple[ResumeChunk, float]]:
+        """Keyword search within one resume, best first.
+
+        The sparse half of hybrid retrieval. Dense search generalises -- it can
+        match "distributed streaming" to a paragraph about Kafka -- and pays
+        for it by being approximate about exact tokens, so a rare term like
+        "gRPC" or a version number can be diluted away in a long chunk. This
+        half does the opposite, and the two are fused rather than chosen
+        between.
+
+        Returns (chunk, ts_rank) pairs. Chunks matching no term are absent
+        rather than returned with a low score, which is what lets a query about
+        nothing retrieve nothing.
+        """
+        tsquery = _to_tsquery(query)
+        if tsquery is None:
+            return []
+
+        query_expression = func.to_tsquery("english", tsquery)
+        rank = func.ts_rank(ResumeChunk.search_vector, query_expression)
+        result = await self.session.execute(
+            select(ResumeChunk, rank.label("rank"))
+            .where(
+                ResumeChunk.resume_id == resume_id,
+                ResumeChunk.search_vector.op("@@")(query_expression),
+            )
+            .order_by(rank.desc(), ResumeChunk.ordinal)
+            .limit(limit)
+        )
+        return [(chunk, float(score)) for chunk, score in result.all()]
 
     async def count_unembedded(self, resume_id: uuid.UUID) -> int:
         return await self.count(

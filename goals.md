@@ -384,11 +384,7 @@ than dropping the resume.
 - [x] **Part 1 — Make retrieval observable, and build the benchmark.** Done;
   see below.
 - [x] **Part 2 — Chunks become real data.** Done; see below.
-- [ ] **Part 3 — Hybrid retrieval.** Postgres full-text search (tsvector + GIN)
-  over those chunks, fused with Chroma's dense results by Reciprocal Rank
-  Fusion, then a relevance threshold and dedup so weak chunks stop padding the
-  prompt. No new infrastructure. **This is the part the semantic baseline below
-  exists to measure.**
+- [x] **Part 3 — Hybrid retrieval.** Done; see below.
 - [ ] **Part 4 — Caching in Redis.** Content-hash → embedding vector, so
   re-uploading or re-indexing a resume is free; question sets reused for an
   identical (resume, role, spec). The part that actually addresses the quota
@@ -498,6 +494,67 @@ answered it, and the score swung between 0.33 and 0.67 purely with the
 dimension count. The harness now uses 4096, and the old pipeline re-measured
 there scores 0.67 / 0.00. The benchmark was measuring its own arithmetic as
 much as the pipeline.
+
+### Part 3 — hybrid retrieval ✅ COMPLETE (2026-08-10)
+`HybridRetriever` (`app/services/ai/retrieval.py`) runs Chroma and Postgres
+full-text over the same chunks and fuses them with Reciprocal Rank Fusion.
+Migration `0007` adds a generated `search_vector` column and a GIN index, so
+Postgres maintains the keyword index and no application code can let it drift.
+
+Design points worth keeping:
+
+- **RRF, not a weighted score.** Cosine distance and `ts_rank` have different
+  ranges and neither is calibrated, so any weighted sum encodes an invented
+  exchange rate. RRF keeps only each retriever's ordering.
+- **Terms are ORed.** `plainto_tsquery` ANDs them, which for "skills and
+  experience relevant to Senior Backend Engineer" matches no chunk at all.
+  Tokenised in Python and bound as a parameter, because `to_tsquery` has a
+  syntax and a candidate's answer will eventually contain a stray `&`.
+- **One shared `retrieval_text()`**, in the model, used by the chunker too.
+  Fusion matches candidates *by chunk text*: if the dense side's formatting and
+  the keyword side's differed by a newline, no chunk would ever be recognised
+  as found by both, rank fusion would still return a list, and the only symptom
+  would be `agreed` sitting at zero for ever.
+- **The cutoff is strict.** Cosine distance 1.0 is exactly orthogonal, so
+  `distance <= 1.0` keeps precisely the chunks the cutoff exists to drop.
+- **The retriever is per request**; its halves have different lifetimes (a
+  session-bound repository, a process-wide client) and either failing degrades
+  to the other.
+
+**Measured, and this is where it gets uncomfortable:**
+
+| tier | dense | sparse | hybrid |
+|---|---|---|---|
+| lexical (r@3 / p@1) | 1.00 / 1.00 | 1.00 / 0.83 | 1.00 / 1.00 |
+| semantic (r@3 / p@1) | 0.50 / 0.17 | 0.50 / 0.50 | 0.50 / **0.33** |
+
+Semantic precision@1 doubled, 0.17 → 0.33. Recall@3 did not move.
+
+**The benchmark was flaky and part 2's recorded 0.67 was a lucky run.** Without
+a distance cutoff, a paraphrased query leaves several chunks at cosine distance
+exactly 1.0 — sharing nothing with it — and which of those ties lands in the
+top 3 varies between processes. A clean checkout of part 2 scored 0.67 once and
+0.50 on the next three runs, same code, same data. So the semantic recall
+figure recorded in part 2 was never reproducible, and the honest number was
+always 0.50. The cutoff removes the ties as a side effect, and every row above
+is now stable across processes; any new probe added to the benchmark has to
+apply `RAG_MAX_DISTANCE` the way the pipeline does, or it reintroduces the
+flakiness.
+
+Two limits stated plainly:
+
+- **This instrument cannot show what hybrid retrieval is really for.** With a
+  lexical stand-in embedder, *both* halves are lexical, so fusion cannot
+  demonstrate a real embedding model matching "distributed streaming" to a
+  paragraph about Kafka. What it does show: keyword search rescues queries the
+  hashed dense half ranks badly (sparse p@1 0.50 vs dense 0.17), fusion
+  regresses nothing, and a query sharing nothing with the resume now retrieves
+  nothing. The semantic gain needs `test_rag_pipeline.py` and a live key.
+- **The cutoff trims the tail; it does not promise emptiness.** A real
+  embedding model returns non-zero similarity for unrelated text, and so does
+  the stand-in through hash collisions — "underwater basket weaving" still
+  matches one chunk at 0.91. The honest claim is that the prompt is no longer
+  padded to k.
 
 ### Why testing came before the rest of Phase 1
 Three genuine bugs were invisible to the test suite and only surfaced by driving

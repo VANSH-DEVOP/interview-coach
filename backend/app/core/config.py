@@ -81,6 +81,15 @@ class Settings(BaseSettings):
     # app falls back to deterministic local implementations (no key required).
     GEMINI_API_KEY: str | None = None
     GEMINI_MODEL: str = "gemini-flash-latest"
+    # Cosine distance beyond which a retrieved chunk is treated as unrelated
+    # and dropped, rather than padding the prompt. Chroma's cosine distance
+    # runs 0 (identical) to 2 (opposite), so 1.0 is "no better than orthogonal"
+    # -- a guard against obvious junk, not a relevance judgement.
+    #
+    # Deliberately loose and configurable: the band a model puts "related" text
+    # in varies between embedding models, so a tight value tuned against one
+    # silently discards good chunks under another.
+    RAG_MAX_DISTANCE: float = 1.0
     # Google retires model IDs, and a retired ID is a 404 that the fallback
     # layer hides. Keep these overridable so a rotation is an env change, and
     # check `GET /v1beta/models` for the key in use before changing a default.

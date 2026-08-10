@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.models.resume_chunk import retrieval_text as _retrieval_text
 from app.services.ai import retrieval_metrics
 
 if TYPE_CHECKING:
@@ -28,12 +29,12 @@ class Chunk:
     def retrieval_text(self) -> str:
         """What gets embedded and what reaches the prompt.
 
-        The heading is prepended rather than stored inside `content` so that
-        every chunk says which part of the resume it came from, even the third
-        chunk of a long EXPERIENCE section. `content` stays clean for the
-        keyword index and for reading in the database.
+        Shared with `ResumeChunk` rather than reimplemented: hybrid retrieval
+        fuses the dense and keyword halves by chunk text, so the string this
+        produces at index time and the one the model rebuilds at query time
+        have to be identical to the character.
         """
-        return f"{self.section}\n{self.content}" if self.section else self.content
+        return _retrieval_text(self.section, self.content)
 
 
 # Headings a resume is likely to use. Matched case-insensitively against a
@@ -266,6 +267,54 @@ class RAGService:
                 duration_ms=elapsed[0],
             )
 
+    async def retrieve_ranked(
+        self,
+        resume_id: uuid.UUID,
+        query: str,
+        top_k: int = 5,
+        *,
+        redactor: "Redactor | None" = None,
+        max_distance: float | None = None,
+        purpose: "Purpose" = "initial_questions",
+    ) -> list[str]:
+        """Dense retrieval, best first, with the junk cut off.
+
+        `max_distance` drops chunks the embedding model does not think are
+        related at all. Without it `top_k` always returns k chunks: a query
+        about underwater basket weaving fills the prompt with the k least-bad
+        paragraphs of a payments resume, and the caller has no scores with
+        which to notice.
+
+        The cutoff is deliberately coarse and configurable, because the right
+        value depends on the embedding model -- distances from one model's
+        "unrelated" band overlap another's "related" one. It is a guard against
+        obvious junk, not a relevance judgement.
+        """
+        results = await self._retrieve(
+            resume_id, query, top_k=top_k, redactor=redactor, purpose=purpose
+        )
+        if not results.documents:
+            return []
+
+        distances = results.distances or [0.0] * len(results.documents)
+        # Strictly less than, not at most: cosine distance 1.0 is exactly
+        # orthogonal -- no relation at all -- so a cutoff of 1.0 meaning "keep
+        # things no better than unrelated" would keep precisely the chunks it
+        # exists to drop. A query sharing nothing with a chunk lands on 1.0 on
+        # the nose, which is how this surfaced.
+        kept = [
+            document
+            for document, distance in zip(results.documents, distances)
+            if max_distance is None or distance < max_distance
+        ]
+        if len(kept) < len(results.documents):
+            logger.debug(
+                "Dropped %d chunk(s) beyond the distance cutoff for resume %s.",
+                len(results.documents) - len(kept),
+                resume_id,
+            )
+        return [document.replace("\n...\n", "\n") for document in kept]
+
     async def retrieve_context(
         self,
         resume_id: uuid.UUID,
@@ -275,30 +324,35 @@ class RAGService:
         redactor: "Redactor | None" = None,
         purpose: "Purpose" = "initial_questions",
     ) -> str:
-        """Retrieve relevant resume context for a query.
+        """Dense-only retrieval, as one string.
 
-        Args:
-            resume_id: Resume ID.
-            query: Query string (e.g., interview question).
-            top_k: Number of top results to retrieve.
-            redactor: Applied to the query before it is sent for embedding.
-                A follow-up query is the candidate's own answer text, so it is
-                no less sensitive than the resume it is matched against.
+        Kept for callers with no database session to run keyword search from.
+        `HybridRetriever` is the path a request takes.
+        """
+        documents = await self.retrieve_ranked(
+            resume_id, query, top_k=top_k, redactor=redactor, purpose=purpose
+        )
+        return "\n\n".join(documents)
 
-        Returns:
-            Concatenated context from top-k relevant chunks.
+    async def _retrieve(
+        self,
+        resume_id: uuid.UUID,
+        query: str,
+        *,
+        top_k: int,
+        redactor: "Redactor | None",
+        purpose: "Purpose",
+    ) -> Any:
+        """Embed the query, ask the vector store, and record what happened.
 
         Raises:
             RuntimeError: If retrieval fails.
         """
         try:
             with retrieval_metrics.timed() as elapsed:
-                # Embed the query
                 query_embedding = await self._embedding_service.embed_text(
                     query, redactor=redactor
                 )
-
-                # Retrieve similar chunks
                 results = await self._vector_store.retrieve_relevant(
                     query_embedding, resume_id, top_k=top_k
                 )
@@ -317,7 +371,7 @@ class RAGService:
                 purpose=purpose, outcome="empty", duration_ms=elapsed[0]
             )
             logger.warning(f"No relevant chunks found for query in resume {resume_id}")
-            return ""
+            return results
 
         # The best distance is recorded, not just the count: five chunks at
         # cosine distance 1.9 are five irrelevant chunks, and a "hit" that is
@@ -329,22 +383,10 @@ class RAGService:
             chunks=len(results.documents),
             best_distance=min(results.distances) if results.distances else None,
         )
-
-        # The marker strip is for chunks written by the *previous* chunker,
-        # which faked overlap with a "\n...\n" separator. Nothing produces
-        # those any more, but a Chroma volume outlives a deploy, so they stay
-        # retrievable until each resume is re-indexed. Remove this once no
-        # index predates the structure-aware chunker.
-        context_parts = []
-        for doc in results.documents:
-            cleaned = doc.replace("\n...\n", "\n")
-            context_parts.append(cleaned)
-
-        context = "\n\n".join(context_parts)
         logger.debug(
             f"Retrieved {len(results.documents)} chunks for query in resume {resume_id}"
         )
-        return context
+        return results
 
     async def delete_index(self, resume_id: uuid.UUID) -> None:
         """Delete indexed resume from vector store.

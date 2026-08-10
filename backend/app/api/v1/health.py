@@ -94,6 +94,14 @@ class RagHealth(BaseModel):
     resumes_indexed: int
     chunks_produced: int
     chunks_embedded: int
+    # Hybrid retrieval. `agreed` at zero across many fusions means the dense
+    # and keyword halves never corroborate each other, which is what a broken
+    # embedding model or an empty keyword index looks like from outside -- the
+    # fused list still comes back full, from one source.
+    fusions: int
+    dense_only: int
+    sparse_only: int
+    agreed: int
     last_at: str | None = None
 
 

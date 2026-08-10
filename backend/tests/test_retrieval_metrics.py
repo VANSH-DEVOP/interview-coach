@@ -187,7 +187,7 @@ async def test_the_generator_counts_every_route_to_a_truncated_prompt():
     """Retrieval that fails, retrieval that finds nothing, and retrieval that is
     never reached all produce the same de-personalised prompt. Only the
     generator sees all three, which is why it does the counting."""
-    generator = GeminiQuestionGenerator(_SilentClient(), rag_service=None)
+    generator = GeminiQuestionGenerator(_SilentClient(), retriever=None)
 
     fragment, used_rag = await generator._resume_context(
         resume_text="a resume", resume_id=uuid.uuid4(), query="q"
@@ -204,7 +204,7 @@ async def test_the_generator_counts_every_route_to_a_truncated_prompt():
 
 async def test_a_successful_retrieval_is_not_counted_as_a_fallback():
     generator = GeminiQuestionGenerator(
-        _SilentClient(), rag_service=_rag(_FakeStore(RetrievalResult(["chunk"], [0.3])))
+        _SilentClient(), retriever=_rag(_FakeStore(RetrievalResult(["chunk"], [0.3])))
     )
 
     _, used_rag = await generator._resume_context(
@@ -217,7 +217,7 @@ async def test_a_successful_retrieval_is_not_counted_as_a_fallback():
 
 async def test_a_session_with_no_resume_records_nothing():
     """Nothing has degraded: there is no resume to retrieve from."""
-    generator = GeminiQuestionGenerator(_SilentClient(), rag_service=None)
+    generator = GeminiQuestionGenerator(_SilentClient(), retriever=None)
 
     fragment, used_rag = await generator._resume_context(
         resume_text=None, resume_id=None, query="q"

@@ -95,7 +95,16 @@ class ChromaVectorStore(VectorStore):
             # Get or create collection for resumes
             self._collection = self._client.get_or_create_collection(
                 name=collection_name,
-                metadata={"hnsw:space": "cosine"},
+                metadata={
+                    "hnsw:space": "cosine",
+                    # How many candidates HNSW keeps while searching. The
+                    # default (10) makes search approximate, which for a
+                    # collection of this shape is cost without benefit: chunks
+                    # are filtered to a single resume, so a query ranks perhaps
+                    # ten vectors, and scanning ten vectors exhaustively is
+                    # free. Widening it buys exactness for nothing.
+                    "hnsw:search_ef": 200,
+                },
             )
             logger.info("ChromaDB vector store initialized")
         except Exception as e:

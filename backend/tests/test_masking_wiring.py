@@ -32,7 +32,11 @@ def test_resume_service_is_wired_with_the_account_holders_name(storage_root) -> 
 
 def test_interview_service_construction_accepts_the_current_user() -> None:
     service = get_interview_service(
-        interviews=object(), resumes=object(), reports=object(), current_user=_user()
+        interviews=object(),
+        resumes=object(),
+        reports=object(),
+        chunks=object(),
+        current_user=_user(),
     )
 
     # The redactor lives inside the generator, which is the static one without

@@ -78,6 +78,15 @@ class _State:
     chunks_produced: int = 0
     chunks_embedded: int = 0
 
+    # Hybrid retrieval. `dense_only` and `sparse_only` climbing together means
+    # the two halves are finding different things, which is the case for
+    # running both; `agreed` at zero means they never corroborate each other
+    # and one of them is probably misconfigured.
+    fusions: int = 0
+    dense_only: int = 0
+    sparse_only: int = 0
+    agreed: int = 0
+
     recent: list[dict[str, object]] = field(default_factory=list)
 
 
@@ -150,6 +159,37 @@ def record_full_text_fallback(*, purpose: Purpose, reason: str) -> None:
     )
 
 
+def record_fusion(
+    *, purpose: Purpose, dense: int, sparse: int, fused: int, agreed: int
+) -> None:
+    """Record what each half of hybrid retrieval contributed.
+
+    The interesting number is `agreed`: chunks both retrievers ranked. Zero
+    across many retrievals means the two halves never corroborate each other,
+    which is what a broken embedding model or an empty keyword index looks like
+    from the outside -- the fused list still comes back full, from one source.
+    """
+    _state.fusions += 1
+    if dense and not sparse:
+        _state.dense_only += 1
+    elif sparse and not dense:
+        _state.sparse_only += 1
+    _state.agreed += agreed
+
+    logger.info(
+        "rag.fusion",
+        extra={
+            "rag": {
+                "purpose": purpose,
+                "dense": dense,
+                "sparse": sparse,
+                "fused": fused,
+                "agreed": agreed,
+            }
+        },
+    )
+
+
 def record_indexing(*, chunks_produced: int, chunks_embedded: int, duration_ms: float) -> None:
     """Record one resume indexing pass."""
     _state.resumes_indexed += 1
@@ -205,6 +245,10 @@ def snapshot() -> dict[str, object]:
         "resumes_indexed": _state.resumes_indexed,
         "chunks_produced": _state.chunks_produced,
         "chunks_embedded": _state.chunks_embedded,
+        "fusions": _state.fusions,
+        "dense_only": _state.dense_only,
+        "sparse_only": _state.sparse_only,
+        "agreed": _state.agreed,
         "last_at": _state.last_at,
     }
 
