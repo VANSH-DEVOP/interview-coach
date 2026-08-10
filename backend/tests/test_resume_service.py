@@ -57,12 +57,13 @@ class _FakeRag:
         self.redactors: list[object] = []
         self._index_error = index_error
 
-    async def index_resume(self, resume_id, user_id, text, *, redactor=None):
+    async def index_chunks(self, resume_id, user_id, chunks, *, redactor=None):
         self.calls.append(("index", resume_id))
         self.redactors.append(redactor)
+        self.chunks = chunks
         if self._index_error is not None:
             raise self._index_error
-        return 3
+        return [chunk.ordinal for chunk in chunks]
 
     async def delete_index(self, resume_id):
         self.calls.append(("delete", resume_id))

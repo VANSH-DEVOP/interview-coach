@@ -7,6 +7,7 @@ from app.models.one_time_token import OneTimeToken, TokenPurpose
 from app.models.question import Question, QuestionType
 from app.models.refresh_token import RefreshToken
 from app.models.resume import Resume, ResumeStatus
+from app.models.resume_chunk import ResumeChunk
 from app.models.user import User
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "TokenPurpose",
     "ReportStatus",
     "Resume",
+    "ResumeChunk",
     "ResumeStatus",
     "SessionStatus",
     "User",

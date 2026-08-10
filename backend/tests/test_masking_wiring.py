@@ -24,7 +24,7 @@ def _user(full_name: str = "Ada Lovelace") -> User:
 
 
 def test_resume_service_is_wired_with_the_account_holders_name(storage_root) -> None:
-    service = get_resume_service(resumes=object(), current_user=_user())
+    service = get_resume_service(resumes=object(), chunks=object(), current_user=_user())
 
     assert service.redactor is not None
     assert "[REDACTED_NAME]" in service.redactor.redact("Ada Lovelace")
@@ -42,7 +42,9 @@ def test_interview_service_construction_accepts_the_current_user() -> None:
 
 def test_a_user_with_no_name_falls_back_to_patterns_only(storage_root) -> None:
     """full_name is nullable; that must degrade, not crash."""
-    service = get_resume_service(resumes=object(), current_user=_user(full_name=None))
+    service = get_resume_service(
+        resumes=object(), chunks=object(), current_user=_user(full_name=None)
+    )
 
     assert service.redactor is default_redactor()
     assert "[REDACTED_EMAIL]" in service.redactor.redact("ada@example.com")

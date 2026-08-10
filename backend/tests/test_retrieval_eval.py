@@ -28,10 +28,17 @@ import uuid
 import pytest
 
 from app.services.ai import retrieval_metrics
-from app.services.ai.rag import RAGService, TextChunker
+from app.services.ai.rag import RAGService, ResumeChunker
 from app.services.ai.vector_store import ChromaVectorStore
 
-_DIMENSIONS = 512
+# The fixture resume has ~229 distinct tokens. At the 512 this started as,
+# collisions in the hashing trick were frequent enough to *decide* rankings:
+# a 46-character chunk that shared one colliding bucket with the query
+# outscored the paragraph that actually answered it, and the semantic score
+# swung between 0.33 and 0.67 purely with the dimension count. 4096 buckets
+# for 229 tokens makes collisions rare, so the numbers measure retrieval
+# rather than the stand-in embedder's arithmetic.
+_DIMENSIONS = 4096
 
 
 def _tokens(text: str) -> list[str]:
@@ -173,9 +180,18 @@ SEMANTIC_QUERIES = [
 # bound on the real system, since a real embedding model handles paraphrase
 # and this stand-in cannot. It measures roughly what the sparse half of a
 # hybrid retriever would contribute.
+#
+# Part 2 (structure-aware chunking), both chunkers measured at 4096 dimensions
+# so the comparison is of chunkers rather than of collision luck:
+#
+#   old (paragraph packing + duplicated overlap)  semantic r@3 0.67, p@1 0.00
+#   new (section-aware, paragraph boundaries)     semantic r@3 0.67, p@1 0.17
+#
+# The recorded semantic figures from Part 1 (0.50 / 0.17) were taken at 512
+# dimensions and were partly collision noise -- see the note on _DIMENSIONS.
 BASELINE = {
     "lexical": {"recall@3": 1.0, "precision@1": 1.0},
-    "semantic": {"recall@3": 0.5, "precision@1": 0.16},
+    "semantic": {"recall@3": 0.66, "precision@1": 0.16},
 }
 
 
@@ -201,11 +217,11 @@ def store() -> ChromaVectorStore:
 
 @pytest.fixture
 async def indexed(store):
-    """The fixture resume, indexed. Returns (rag, resume_id, embeddings)."""
+    """The fixture resume, chunked and indexed. Returns (rag, resume_id, embeddings)."""
     embeddings = LexicalEmbeddings()
     rag = RAGService(embeddings, store)
     resume_id, user_id = uuid.uuid4(), uuid.uuid4()
-    await rag.index_resume(resume_id, user_id, RESUME)
+    await rag.index_chunks(resume_id, user_id, ResumeChunker().chunk(RESUME))
     return rag, resume_id, embeddings
 
 
@@ -277,9 +293,10 @@ async def test_retrieval_is_scoped_to_one_resume(store):
     embeddings = LexicalEmbeddings()
     rag = RAGService(embeddings, store)
     mine, theirs = uuid.uuid4(), uuid.uuid4()
-    await rag.index_resume(mine, uuid.uuid4(), RESUME)
-    await rag.index_resume(
-        theirs, uuid.uuid4(), "SKILLS\nHaskell, Erlang, OCaml, Prolog\n"
+    chunker = ResumeChunker()
+    await rag.index_chunks(mine, uuid.uuid4(), chunker.chunk(RESUME))
+    await rag.index_chunks(
+        theirs, uuid.uuid4(), chunker.chunk("SKILLS\nHaskell, Erlang, OCaml, Prolog\n")
     )
 
     context = await rag.retrieve_context(mine, "haskell erlang ocaml prolog")
@@ -297,22 +314,7 @@ async def test_an_unindexed_resume_retrieves_nothing_rather_than_anything(indexe
     assert retrieval_metrics.snapshot()["empty"] == 1
 
 
-# -- Known warts, recorded so Part 2 can show they are gone --------------------
-
-
-def test_chunk_overlap_duplicates_text_verbatim():
-    """The current chunker fakes overlap by prepending the previous chunk's
-    last 100 characters behind a "\\n...\\n" marker, which retrieval then strips
-    out. So the same sentences are embedded twice and can be retrieved twice,
-    spending quota and prompt budget on a copy.
-
-    Recorded as a test rather than a comment: Part 2 replaces this, and the
-    replacement should make this test fail and be deleted.
-    """
-    chunks = TextChunker.chunk_text(RESUME)
-
-    assert len(chunks) > 1
-    assert any("\n...\n" in chunk for chunk in chunks)
+# -- Known warts, recorded so a later part can show they are gone -------------
 
 
 async def test_top_k_pads_the_prompt_with_whatever_is_left(indexed):

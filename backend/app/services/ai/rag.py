@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.services.ai import retrieval_metrics
@@ -15,61 +16,173 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class TextChunker:
-    """Split resume text into semantic chunks."""
+@dataclass(frozen=True)
+class Chunk:
+    """One retrievable piece of a resume."""
 
-    @staticmethod
-    def chunk_text(
-        text: str,
-        chunk_size: int = 500,
-        overlap: int = 100,
-    ) -> list[str]:
-        """Split text into chunks with overlap.
+    ordinal: int
+    content: str
+    section: str | None = None
 
-        Args:
-            text: Text to chunk.
-            chunk_size: Target size of each chunk in characters.
-            overlap: Overlap between chunks.
+    @property
+    def retrieval_text(self) -> str:
+        """What gets embedded and what reaches the prompt.
 
-        Returns:
-            List of text chunks.
+        The heading is prepended rather than stored inside `content` so that
+        every chunk says which part of the resume it came from, even the third
+        chunk of a long EXPERIENCE section. `content` stays clean for the
+        keyword index and for reading in the database.
         """
+        return f"{self.section}\n{self.content}" if self.section else self.content
+
+
+# Headings a resume is likely to use. Matched case-insensitively against a
+# whole line, so "Technical Skills" and "TECHNICAL SKILLS" both land.
+_KNOWN_SECTIONS = frozenset(
+    {
+        "about",
+        "achievements",
+        "additional information",
+        "awards",
+        "certifications",
+        "certificates",
+        "contact",
+        "education",
+        "employment",
+        "employment history",
+        "experience",
+        "interests",
+        "languages",
+        "objective",
+        "profile",
+        "projects",
+        "publications",
+        "references",
+        "skills",
+        "summary",
+        "technical skills",
+        "volunteer",
+        "volunteering",
+        "work experience",
+        "work history",
+    }
+)
+
+# A heading is short. Anything longer is a sentence that happens to be
+# capitalised, and treating it as a heading would swallow the text under it.
+_MAX_HEADING_CHARS = 48
+
+# Target size for a chunk. Sections shorter than this stay whole; longer ones
+# are split at line boundaries. Bigger than the 500 it replaces, because a
+# chunk that keeps a whole job or a whole skills list together retrieves as one
+# idea, and the section heading now travels with every piece.
+_MAX_CHUNK_CHARS = 800
+
+
+def _is_heading(line: str) -> bool:
+    """Whether a line looks like a resume section heading.
+
+    Two signals, deliberately conservative -- a false positive splits a section
+    in half, and a false negative merely leaves a chunk unlabelled:
+
+    - it is one of the headings resumes actually use, or
+    - it is short, has letters, and is entirely upper case.
+    """
+    stripped = line.strip().rstrip(":").strip()
+    if not stripped or len(stripped) > _MAX_HEADING_CHARS:
+        return False
+    if stripped.lower() in _KNOWN_SECTIONS:
+        return True
+    letters = [character for character in stripped if character.isalpha()]
+    return bool(letters) and stripped == stripped.upper()
+
+
+class ResumeChunker:
+    """Split a resume into chunks that follow its own structure.
+
+    The chunker this replaces packed paragraphs to a character budget and then
+    faked overlap by prepending the previous chunk's last 100 characters behind
+    a "\\n...\\n" marker, which retrieval stripped back out. So the same
+    sentences were embedded twice, could be retrieved twice, and cost prompt
+    budget as a copy of themselves.
+
+    Sections are the unit instead. A resume already declares its own structure
+    in headings, and those headings are the strongest retrieval signal in the
+    document: "what did they study" wants the block under EDUCATION, and no
+    amount of character counting will find it.
+    """
+
+    def __init__(self, max_chunk_chars: int = _MAX_CHUNK_CHARS) -> None:
+        self._max_chunk_chars = max_chunk_chars
+
+    def chunk(self, text: str) -> list[Chunk]:
         if not text or not text.strip():
             return []
 
-        # Split by paragraphs first for semantic integrity
-        paragraphs = text.split("\n\n")
-        chunks = []
-        current_chunk = ""
+        chunks: list[Chunk] = []
+        for section, body in self._sections(text):
+            for piece in self._split(body):
+                chunks.append(Chunk(ordinal=len(chunks), content=piece, section=section))
+        return chunks
 
-        for para in paragraphs:
-            if len(current_chunk) + len(para) + 2 < chunk_size:
-                # Add to current chunk if it doesn't exceed size
-                current_chunk += ("\n\n" if current_chunk else "") + para
+    def _sections(self, text: str) -> list[tuple[str | None, str]]:
+        """Split into (heading, body) pairs, in document order.
+
+        Text before the first heading -- the name and contact block, usually --
+        keeps a heading of None rather than being dropped or attached to
+        whatever section happens to come first.
+        """
+        sections: list[tuple[str | None, str]] = []
+        heading: str | None = None
+        body: list[str] = []
+
+        for line in text.replace("\r\n", "\n").split("\n"):
+            if _is_heading(line):
+                if any(entry.strip() for entry in body):
+                    sections.append((heading, "\n".join(body).strip()))
+                heading = line.strip().rstrip(":").strip()
+                body = []
             else:
-                # Start new chunk if adding this para would exceed size
-                if current_chunk:
-                    chunks.append(current_chunk)
-                current_chunk = para
+                body.append(line.rstrip())
 
-        # Add remaining chunk
-        if current_chunk:
-            chunks.append(current_chunk)
+        if any(entry.strip() for entry in body):
+            sections.append((heading, "\n".join(body).strip()))
+        return sections
 
-        # Add overlap between chunks for context continuity
-        if len(chunks) > 1 and overlap > 0:
-            overlapped_chunks = []
-            for i, chunk in enumerate(chunks):
-                if i == 0:
-                    overlapped_chunks.append(chunk)
-                else:
-                    # Add end of previous chunk as prefix for context
-                    prev_end = chunks[i - 1][-overlap:] if len(chunks[i - 1]) > overlap else chunks[i - 1]
-                    combined = prev_end + "\n...\n" + chunk
-                    overlapped_chunks.append(combined)
-            chunks = overlapped_chunks
+    def _split(self, body: str) -> list[str]:
+        """Break one section's body into pieces no larger than the budget.
 
-        return [c.strip() for c in chunks if c.strip()]
+        Paragraphs are the unit, not lines. Resume text arrives from a PDF
+        hard-wrapped at whatever width the document used, so a physical line is
+        a typographic accident: splitting on one cut "Introduced gRPC between
+        the routing and dispatch services, cutting p99 latency" from "from
+        340ms to 45ms", and a query about latency then matched neither half
+        well. Blank lines are the real boundaries -- one job, one bullet group,
+        one paragraph.
+
+        A single paragraph over the budget is left whole. It is rare in a
+        resume, and half a job entry retrieves as neither of the two things it
+        was.
+        """
+        if len(body) <= self._max_chunk_chars:
+            return [body] if body.strip() else []
+
+        pieces: list[str] = []
+        current: list[str] = []
+        size = 0
+        for paragraph in body.split("\n\n"):
+            if not paragraph.strip():
+                continue
+            addition = len(paragraph) + 2
+            if current and size + addition > self._max_chunk_chars:
+                pieces.append("\n\n".join(current).strip())
+                current, size = [], 0
+            current.append(paragraph.strip())
+            size += addition
+
+        if current:
+            pieces.append("\n\n".join(current).strip())
+        return [piece for piece in pieces if piece]
 
 
 class RAGService:
@@ -79,67 +192,65 @@ class RAGService:
         self._embedding_service = embedding_service
         self._vector_store = vector_store
 
-    async def index_resume(
+    async def index_chunks(
         self,
         resume_id: uuid.UUID,
         user_id: uuid.UUID,
-        resume_text: str,
+        chunks: list[Chunk],
         *,
         redactor: "Redactor | None" = None,
-    ) -> int:
-        """Index a resume for RAG retrieval.
+    ) -> list[int]:
+        """Embed chunks and put them in the vector store.
+
+        Takes chunks rather than raw text: chunking is a pure function and the
+        rows belong to the caller's transaction, so `ResumeService` splits the
+        text and saves it, and this stays free of a database session. It is
+        cached process-wide (`get_rag_service`) and could not hold one anyway.
 
         Args:
             resume_id: Resume ID.
             user_id: User ID.
-            resume_text: Full parsed resume text.
+            chunks: Chunks to index, in document order.
             redactor: Applied to each chunk before it is sent for embedding.
 
         Returns:
-            Number of chunks stored.
+            The ordinals that reached the vector store. Anything missing from
+            this list is text the retriever cannot see, and the caller records
+            that on the row.
 
         Raises:
             RuntimeError: If indexing fails.
         """
-        produced = 0
-        embedded = 0
+        if not chunks:
+            logger.warning(f"No chunks to index for resume {resume_id}")
+            return []
+
+        embedded: list[int] = []
         try:
             with retrieval_metrics.timed() as elapsed:
-                # Chunk the resume
-                chunks = TextChunker.chunk_text(resume_text)
-                produced = len(chunks)
-                if not chunks:
-                    logger.warning(f"No chunks generated for resume {resume_id}")
-                    return 0
-
-                logger.info(f"Chunked resume {resume_id} into {len(chunks)} pieces")
-
-                # Generate embeddings for chunks
                 embeddings = await self._embedding_service.embed_batch(
-                    chunks, redactor=redactor
+                    [chunk.retrieval_text for chunk in chunks], redactor=redactor
                 )
 
-                # Filter out failed embeddings
-                valid_chunks = [
+                # An embedding call can fail per chunk without failing the
+                # batch, and the caller needs to know which ones.
+                usable = [
                     (chunk, embedding)
                     for chunk, embedding in zip(chunks, embeddings)
                     if embedding
                 ]
-
-                if not valid_chunks:
+                if not usable:
                     raise RuntimeError(f"Failed to embed any chunks for resume {resume_id}")
 
-                chunks_only = [chunk for chunk, _ in valid_chunks]
-                embeddings_only = [embedding for _, embedding in valid_chunks]
-                embedded = len(chunks_only)
-
-                # Store in vector store
                 await self._vector_store.add_resume(
-                    resume_id, user_id, chunks_only, embeddings_only
+                    resume_id,
+                    user_id,
+                    [chunk.retrieval_text for chunk, _ in usable],
+                    [embedding for _, embedding in usable],
                 )
-
+                embedded = [chunk.ordinal for chunk, _ in usable]
                 logger.info(
-                    f"Successfully indexed {len(chunks_only)} chunks for resume {resume_id}"
+                    f"Successfully indexed {len(embedded)} chunks for resume {resume_id}"
                 )
             return embedded
         except Exception as e:
@@ -149,12 +260,11 @@ class RAGService:
             # Recorded even when indexing raised: a resume that produced 30
             # chunks and embedded 4 is the case worth seeing, and it reaches
             # here by both paths.
-            if produced:
-                retrieval_metrics.record_indexing(
-                    chunks_produced=produced,
-                    chunks_embedded=embedded,
-                    duration_ms=elapsed[0],
-                )
+            retrieval_metrics.record_indexing(
+                chunks_produced=len(chunks),
+                chunks_embedded=len(embedded),
+                duration_ms=elapsed[0],
+            )
 
     async def retrieve_context(
         self,
@@ -220,7 +330,11 @@ class RAGService:
             best_distance=min(results.distances) if results.distances else None,
         )
 
-        # Combine chunks into context, removing overlap markers
+        # The marker strip is for chunks written by the *previous* chunker,
+        # which faked overlap with a "\n...\n" separator. Nothing produces
+        # those any more, but a Chroma volume outlives a deploy, so they stay
+        # retrievable until each resume is re-indexed. Remove this once no
+        # index predates the structure-aware chunker.
         context_parts = []
         for doc in results.documents:
             cleaned = doc.replace("\n...\n", "\n")

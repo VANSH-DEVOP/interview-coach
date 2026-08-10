@@ -12,8 +12,11 @@ from typing import TYPE_CHECKING
 from app.core.config import get_settings
 from app.core.exceptions import NotFoundError, PayloadTooLargeError, ValidationError
 from app.models.resume import Resume, ResumeStatus
+from app.models.resume_chunk import ResumeChunk
+from app.repositories.resume_chunk_repository import ResumeChunkRepository
 from app.repositories.resume_repository import ResumeRepository
 from app.services.ai.degradation import record_fallback
+from app.services.ai.rag import ResumeChunker
 from app.services.resume_parser import ResumeParser
 from app.services.storage.base import StorageService
 
@@ -36,6 +39,7 @@ class ResumeService:
         storage: StorageService,
         rag_service: "RAGService | None" = None,
         redactor: "Redactor | None" = None,
+        chunks: ResumeChunkRepository | None = None,
     ) -> None:
         self.resumes = resumes
         self.storage = storage
@@ -43,6 +47,11 @@ class ResumeService:
         # Indexing sends the resume to Google a chunk at a time. The parsed
         # text stays whole in our own database; only what leaves is redacted.
         self.redactor = redactor
+        # Chunking is a pure function and the rows belong to this transaction,
+        # so the split and the save happen here rather than inside RAGService,
+        # which is cached process-wide and holds no session.
+        self.chunks = chunks
+        self.chunker = ResumeChunker()
 
     async def upload(
         self, *, user_id: uuid.UUID, file_name: str, content: bytes, content_type: str
@@ -90,21 +99,47 @@ class ResumeService:
     async def _index(
         self, resume: Resume, user_id: uuid.UUID, parsed_text: str | None
     ) -> None:
-        """Index a resume for retrieval. Never raises.
+        """Chunk a resume, store the chunks, and index them. Never raises.
 
         Non-blocking by design: a failure here must not fail the upload. It is
         recorded as a degradation so it shows up on /health -- an unindexed
         resume means every later question for it is built from truncated raw
         text instead of retrieved context, with no other outward sign.
+
+        The chunks are saved *before* the embedding call and marked embedded
+        after it, in that order deliberately. A provider failure then leaves
+        rows with `embedded_at` NULL -- a durable record of which parts of this
+        resume the retriever cannot see -- instead of leaving nothing at all
+        and requiring a re-parse to find out.
         """
-        if not (self.rag_service and parsed_text):
+        if not parsed_text:
+            return
+
+        chunks = self.chunker.chunk(parsed_text)
+        if self.chunks is not None:
+            await self.chunks.replace_for_resume(
+                resume.id,
+                user_id,
+                [
+                    ResumeChunk(
+                        ordinal=chunk.ordinal,
+                        section=chunk.section,
+                        content=chunk.content,
+                    )
+                    for chunk in chunks
+                ],
+            )
+
+        if not self.rag_service:
             return
         try:
-            chunk_count = await self.rag_service.index_resume(
-                resume.id, user_id, parsed_text, redactor=self.redactor
+            embedded = await self.rag_service.index_chunks(
+                resume.id, user_id, chunks, redactor=self.redactor
             )
+            if self.chunks is not None:
+                await self.chunks.mark_embedded(resume.id, embedded)
             logger.info(
-                f"Indexed resume {resume.id} with {chunk_count} chunks for RAG retrieval"
+                f"Indexed resume {resume.id}: {len(embedded)}/{len(chunks)} chunks embedded"
             )
         except Exception as e:
             logger.error(f"Failed to index resume {resume.id} for RAG: {e}")

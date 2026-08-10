@@ -73,7 +73,20 @@ Degradations are recorded by `app/services/ai/degradation.py` and reported in th
 
 `FallbackQuestionGenerator` / `FallbackEvaluator` wrap the primary and catch *any* exception. `GeminiClient` (`gemini_client.py`) is a hand-written httpx call to the REST API in JSON mode (no SDK); it raises `GeminiError` on bad shape/status. Model output is deliberately parsed leniently (`_first`, `_as_str_list` in `evaluator.py`) because field names vary between responses.
 
-Flow: `ResumeService.upload()` parses PDF/DOCX (`resume_parser.py`) → sets `Resume.parsed_text` + `status` → indexes chunks into ChromaDB (non-blocking; failure is logged, upload still succeeds). `InterviewService.create()` generates questions (RAG-retrieved resume context when available), `submit_answer()` may append a `follow_up` question linked by `parent_question_id`, `complete()` runs the evaluator and writes a `COMPLETED` `EvaluationReport`. `reevaluate()` regenerates a report for an already-completed session.
+Flow: `ResumeService.upload()` parses PDF/DOCX (`resume_parser.py`) → sets `Resume.parsed_text` + `status` → chunks, saves the chunks as rows, then embeds them into ChromaDB (non-blocking; failure is logged, upload still succeeds).
+
+### Chunking and the chunk table
+
+`ResumeChunker` splits on the resume's own **section headings** (`EXPERIENCE`, `EDUCATION`, …), then packs paragraphs to ~800 chars within a section. Two rules that look like details and are not:
+
+- **Split at blank lines, never at line breaks.** Resume text arrives from a PDF hard-wrapped, so a physical line ending is a typographic accident — splitting on one cut a sentence about gRPC latency in half and the query about latency then matched neither piece.
+- **`Chunk.retrieval_text` prepends the section heading**, so the third chunk of a long EXPERIENCE section still says what it is. `content` stays clean in the database for reading and for the keyword index hybrid search will add.
+
+Chunks are rows in `resume_chunks` (`ResumeChunkRepository`), which is what makes re-indexing possible without re-embedding — at 20 provider requests/day, re-embedding a resume to rebuild an index is not a thing you can casually do. `embedded_at` NULL means the text is stored and the retriever cannot see it: the durable version of the produced-vs-embedded gap.
+
+The ordering in `ResumeService._index` is deliberate: **save chunks, then embed, then mark embedded.** A provider failure leaves rows with `embedded_at` NULL rather than leaving nothing, so which parts of the resume are missing from the index survives the failure.
+
+`replace_for_resume` deletes then inserts rather than upserting by ordinal — re-chunking can produce *fewer* pieces, and updating in place would leave the previous run's tail behind as rows matching no part of the document. `InterviewService.create()` generates questions (RAG-retrieved resume context when available), `submit_answer()` may append a `follow_up` question linked by `parent_question_id`, `complete()` runs the evaluator and writes a `COMPLETED` `EvaluationReport`. `reevaluate()` regenerates a report for an already-completed session.
 
 ChromaDB persists to `CHROMA_PATH` (default `/var/lib/interviewpilot/chroma`, backed by the `chroma_data` Docker volume). `get_rag_service()` is `@lru_cache`d, so tests that vary settings must call `get_rag_service.cache_clear()`. Outside Docker that default path is usually unwritable — RAG then logs a warning and disables itself, so set `CHROMA_PATH` to something local when running the backend directly.
 
@@ -90,7 +103,9 @@ Retrieval degrades more quietly than anything else here: off, empty, or broken, 
 
 Any new structured field goes through `extra=`; `JsonFormatter` emits every non-standard record attribute, so nothing needs registering.
 
-**The retrieval benchmark** is `tests/test_retrieval_eval.py`: one fixture resume, twelve queries, real (in-memory) Chroma, deterministic lexical embeddings. Two tiers — lexical queries pin the machinery at 1.00, semantic ones sit at recall@3 0.50 / precision@1 0.17 and are the number the hybrid-search work has to move. Baselines are floors: raise them when a change earns it, and never lower one to make a suite pass.
+**The retrieval benchmark** is `tests/test_retrieval_eval.py`: one fixture resume, twelve queries, real (in-memory) Chroma, deterministic lexical embeddings. Two tiers — lexical queries pin the machinery at 1.00/1.00, semantic ones sit at recall@3 0.67 / precision@1 0.17 and are the number the hybrid-search work has to move. Baselines are floors: raise them when a change earns it, and **never lower one to make a suite pass** — if a change drops a score, either the change or the instrument is wrong, and both have happened here.
+
+Two traps in that harness, both hit already: the hashing trick needs enough dimensions that collisions don't decide rankings (at 512 for a 229-token vocabulary, a 46-char chunk was beating the paragraph that answered the query), and comparisons between pipeline versions must hold the embedder fixed or they measure collision luck rather than retrieval.
 
 Deeper docs: `backend/AI_INTEGRATION.md`, `backend/RAG_IMPLEMENTATION.md`. The six-part production-RAG plan lives in `goals.md`.
 

@@ -17,7 +17,7 @@ from app.services.ai import gemini_client as gemini_module
 from app.services.ai.embedding import EmbeddingService
 from app.services.ai.gemini_client import GeminiClient
 from app.services.ai.masking import redactor_for
-from app.services.ai.rag import RAGService
+from app.services.ai.rag import RAGService, ResumeChunker
 
 RESUME = (
     "Ada Lovelace\n"
@@ -212,8 +212,11 @@ async def test_indexing_redacts_what_is_sent_but_stores_the_original(
     store = _RecordingVectorStore()
     rag = RAGService(EmbeddingService("k"), store)
 
-    await rag.index_resume(
-        uuid.uuid4(), uuid.uuid4(), RESUME, redactor=redactor_for("Ada Lovelace")
+    await rag.index_chunks(
+        uuid.uuid4(),
+        uuid.uuid4(),
+        ResumeChunker().chunk(RESUME),
+        redactor=redactor_for("Ada Lovelace"),
     )
 
     assert_no_identifiers(embedding_transport.sent_text)

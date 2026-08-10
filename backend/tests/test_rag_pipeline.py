@@ -5,7 +5,7 @@ import logging
 import uuid
 
 from app.services.ai.embedding import EmbeddingService
-from app.services.ai.rag import RAGService, TextChunker
+from app.services.ai.rag import RAGService, ResumeChunker
 from app.services.ai.vector_store import ChromaVectorStore
 
 logging.basicConfig(level=logging.INFO)
@@ -49,11 +49,11 @@ async def test_text_chunking():
     BS Computer Science, State University (2018)
     """
     
-    chunks = TextChunker.chunk_text(sample_resume, chunk_size=500, overlap=100)
+    chunks = ResumeChunker().chunk(sample_resume)
     print(f"\n✅ Split resume into {len(chunks)} chunks:\n")
-    for i, chunk in enumerate(chunks, 1):
-        print(f"Chunk {i} ({len(chunk)} chars):")
-        print(f"  {chunk[:100]}...")
+    for chunk in chunks:
+        print(f"Chunk {chunk.ordinal} [{chunk.section}] ({len(chunk.content)} chars):")
+        print(f"  {chunk.content[:100]}...")
         print()
 
 
@@ -179,8 +179,9 @@ async def test_rag_pipeline():
         print(f"Resume to index:\n{sample_resume[:200]}...\n")
         
         # Index resume
-        chunk_count = await rag_service.index_resume(resume_id, user_id, sample_resume)
-        print(f"✅ Indexed resume with {chunk_count} chunks\n")
+        chunks = ResumeChunker().chunk(sample_resume)
+        embedded = await rag_service.index_chunks(resume_id, user_id, chunks)
+        print(f"✅ Indexed resume: {len(embedded)}/{len(chunks)} chunks embedded\n")
         
         # Retrieve relevant context for various queries
         queries = [

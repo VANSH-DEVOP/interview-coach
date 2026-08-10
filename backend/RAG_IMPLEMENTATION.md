@@ -5,7 +5,8 @@
 InterviewPilot now implements **Retrieval-Augmented Generation (RAG)** for intelligent interview question generation. When a candidate uploads a resume, the system:
 
 1. **Parses** the PDF/DOCX into text
-2. **Chunks** the text into semantic segments
+2. **Chunks** the text along its own section headings, and stores the chunks as
+   rows in `resume_chunks`
 3. **Embeds** each chunk using Gemini's embedding API
 4. **Stores** embeddings in ChromaDB vector database
 5. **Retrieves** the most relevant sections when generating questions
@@ -17,9 +18,9 @@ This ensures questions are **personalized** to the candidate's actual experience
 > working first version rather than a finished one — dense-only retrieval,
 > fixed-size chunking with a duplicating overlap, one embedding HTTP call per
 > chunk, no caching, no relevance threshold. `goals.md` holds a six-part plan
-> to take it further, and **Part 1 (observability + a retrieval benchmark) has
-> landed**; see "Observability" below. Read the plan before changing anything
-> here, because Parts 2 and 3 replace the chunker and the retriever outright.
+> to take it further. **Parts 1 (observability + benchmark) and 2 (chunks as
+> rows + structure-aware chunking) have landed**; see below. Read the plan
+> before changing anything here, because Part 3 replaces the retriever.
 
 ## Observability
 
@@ -53,8 +54,12 @@ in CI with no API key and no quota. Two tiers:
   / precision@1 1.00. This is a machinery check: chunk → embed → store → filter
   by resume → rank → assemble.
 - **semantic** — the same six facts asked the way an interviewer would ask
-  them. Currently recall@3 0.50 / precision@1 0.17. This is the gap the hybrid
+  them. Currently recall@3 0.67 / precision@1 0.17. This is the gap the hybrid
   retrieval work exists to close.
+
+Comparisons between pipeline versions must hold the embedder fixed, or they
+measure hash-collision luck rather than retrieval. Part 2's chunker was scored
+against the old one at identical dimensions for exactly this reason.
 
 The semantic score is a *lower bound* on the real system: a real embedding
 model handles paraphrase and the deterministic stand-in cannot, so treat it as
@@ -80,10 +85,24 @@ lower one to make the suite pass.
                             │
                             ▼
                 ┌───────────────────────────────────┐
-                │ RAGService.index_resume()         │
-                │  - Chunk text                     │
+                │ ResumeChunker.chunk()             │
+                │  - Split on section headings      │
+                │  - Pack paragraphs to ~800 chars  │
+                └───────────┬───────────────────────┘
+                            │
+                            ▼
+                ┌───────────────────────────────────┐
+                │ resume_chunks (PostgreSQL)        │
+                │  - text, section, ordinal         │
+                │  - embedded_at NULL until indexed │
+                └───────────┬───────────────────────┘
+                            │
+                            ▼
+                ┌───────────────────────────────────┐
+                │ RAGService.index_chunks()         │
                 │  - Generate embeddings            │
                 │  - Store in ChromaDB              │
+                │  - Return embedded ordinals       │
                 └───────────┬───────────────────────┘
                             │
                             ▼
@@ -131,24 +150,38 @@ lower one to make the suite pass.
 
 ## Components
 
-### 1. TextChunker (`app/services/ai/rag.py`)
+### 1. ResumeChunker (`app/services/ai/rag.py`)
 
-Splits resume text into semantic chunks with configurable overlap for context continuity.
+Splits resume text along the resume's own structure.
 
 ```python
-chunks = TextChunker.chunk_text(
-    text=resume_text,
-    chunk_size=500,      # Characters per chunk
-    overlap=100,          # Overlap between chunks
-)
-# Returns: ["Experience in systems...", "Led 3 engineers...", ...]
+chunks = ResumeChunker().chunk(resume_text)
+# Returns: [Chunk(ordinal=0, section=None, content="Priya Raman\n..."),
+#           Chunk(ordinal=1, section="SUMMARY", content="Backend engineer..."), ...]
+
+chunks[1].retrieval_text   # "SUMMARY\nBackend engineer..." -- what gets embedded
 ```
 
-**Features:**
-- Paragraph-aware splitting for semantic integrity
-- Configurable chunk size and overlap
-- Removes redundant whitespace
-- Handles edge cases gracefully
+**How it splits:**
+- **Section headings first.** A short line that is all-caps or a known resume
+  heading (`EXPERIENCE`, `Technical Skills`, …) starts a new section. Text
+  before the first heading — the name and contact block — is kept with
+  `section=None` rather than dropped or mislabelled.
+- **Paragraphs within a section**, packed to ~800 characters. Splits happen at
+  blank lines, never at line breaks: resume text comes out of a PDF
+  hard-wrapped, so a line ending is a typographic accident and splitting on one
+  cuts sentences in half.
+- **A paragraph over the budget is left whole.** Half a job entry retrieves as
+  neither of the two things it was.
+- **No overlap.** The chunker this replaced faked overlap by duplicating the
+  previous chunk's last 100 characters behind a `\n...\n` marker, so the same
+  sentences were embedded twice, could be retrieved twice, and cost prompt
+  budget as a copy of themselves.
+
+**Where chunks live:** rows in `resume_chunks`, written before the embedding
+call. That makes re-indexing possible without re-embedding — at 20 provider
+requests per day, re-embedding a resume to rebuild an index is not a casual
+operation — and `embedded_at IS NULL` marks text the retriever cannot see.
 
 ### 2. EmbeddingService (`app/services/ai/embedding.py`)
 

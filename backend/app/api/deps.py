@@ -24,6 +24,7 @@ from app.repositories.interview_repository import InterviewRepository
 from app.repositories.one_time_token_repository import OneTimeTokenRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.report_repository import ReportRepository
+from app.repositories.resume_chunk_repository import ResumeChunkRepository
 from app.repositories.resume_repository import ResumeRepository
 from app.repositories.user_repository import UserRepository
 from app.services.account_service import AccountService
@@ -57,6 +58,10 @@ def get_user_repository(session: DbSession) -> UserRepository:
 
 def get_resume_repository(session: DbSession) -> ResumeRepository:
     return ResumeRepository(session)
+
+
+def get_resume_chunk_repository(session: DbSession) -> ResumeChunkRepository:
+    return ResumeChunkRepository(session)
 
 
 def get_interview_repository(session: DbSession) -> InterviewRepository:
@@ -200,6 +205,7 @@ def get_report_service(
 
 def get_resume_service(
     resumes: Annotated[ResumeRepository, Depends(get_resume_repository)],
+    chunks: Annotated[ResumeChunkRepository, Depends(get_resume_chunk_repository)],
     current_user: CurrentUser,
 ) -> ResumeService:
     # The current user is a dependency purely so the redactor knows whose name
@@ -211,6 +217,7 @@ def get_resume_service(
         get_storage_service(),
         rag_service,
         redactor_for(current_user.full_name),
+        chunks=chunks,
     )
 
 

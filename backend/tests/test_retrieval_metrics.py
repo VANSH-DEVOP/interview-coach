@@ -13,7 +13,7 @@ import pytest
 
 from app.services.ai import retrieval_metrics
 from app.services.ai.gemini import GeminiQuestionGenerator
-from app.services.ai.rag import RAGService
+from app.services.ai.rag import Chunk, RAGService
 from app.services.ai.vector_store import RetrievalResult
 
 
@@ -49,6 +49,13 @@ class _FakeStore:
 
     async def add_resume(self, resume_id, user_id, chunks, embeddings):
         self.added.append((resume_id, chunks, embeddings))
+
+
+def _two_chunks() -> list[Chunk]:
+    return [
+        Chunk(ordinal=0, content="para one", section="SUMMARY"),
+        Chunk(ordinal=1, content="para two", section="SKILLS"),
+    ]
 
 
 def _rag(store=None, embeddings=None) -> RAGService:
@@ -123,7 +130,7 @@ async def test_indexing_records_produced_versus_embedded():
     store = _FakeStore()
     rag = RAGService(_FakeEmbeddings(), store)
 
-    await rag.index_resume(uuid.uuid4(), uuid.uuid4(), "para one\n\npara two")
+    await rag.index_chunks(uuid.uuid4(), uuid.uuid4(), _two_chunks())
 
     state = retrieval_metrics.snapshot()
     assert state["resumes_indexed"] == 1
@@ -137,7 +144,7 @@ async def test_indexing_is_recorded_even_when_it_fails_partway():
     rag = RAGService(_FakeEmbeddings(error=RuntimeError("quota")), _FakeStore())
 
     with pytest.raises(RuntimeError):
-        await rag.index_resume(uuid.uuid4(), uuid.uuid4(), "para one\n\npara two")
+        await rag.index_chunks(uuid.uuid4(), uuid.uuid4(), _two_chunks())
 
     state = retrieval_metrics.snapshot()
     assert state["chunks_produced"] > 0

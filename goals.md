@@ -383,11 +383,7 @@ than dropping the resume.
 
 - [x] **Part 1 — Make retrieval observable, and build the benchmark.** Done;
   see below.
-- [ ] **Part 2 — Chunks become real data.** A `resume_chunks` table (text,
-  section label, ordinal, embedding status) plus structure-aware chunking that
-  recognises resume sections and keeps bullet groups intact. Deletes the
-  `\n...\n` overlap hack, makes re-indexing possible without re-embedding, and
-  gives Part 3 something to build a keyword index on.
+- [x] **Part 2 — Chunks become real data.** Done; see below.
 - [ ] **Part 3 — Hybrid retrieval.** Postgres full-text search (tsvector + GIN)
   over those chunks, fused with Chroma's dense results by Reciprocal Rank
   Fusion, then a relevance threshold and dedup so weak chunks stop padding the
@@ -451,6 +447,57 @@ Two current warts are pinned as tests so their removal is visible: the
 `\n...\n` overlap duplication (Part 2 deletes it) and `top_k` returning k
 chunks however irrelevant, with no scores in the return value for the caller to
 judge (Part 3's threshold fixes it).
+
+### Part 2 — chunks as rows + structure-aware chunking ✅ COMPLETE (2026-08-10)
+`resume_chunks` (migration `0006`): text, section label, ordinal, `embedded_at`.
+`ResumeChunker` splits on the resume's own headings, then packs paragraphs to
+~800 chars within a section. `RAGService.index_chunks()` replaces
+`index_resume()` and takes chunks rather than text, so it stays free of a
+database session — it is cached process-wide and could not hold one.
+
+What the design turns on:
+
+- **Split at blank lines, never at line breaks.** Resume text arrives from a
+  PDF hard-wrapped, so a physical line ending is a typographic accident. The
+  first version split on lines and cut "Introduced gRPC between the routing and
+  dispatch services, cutting p99 latency" from "from 340ms to 45ms" — a query
+  about latency then matched neither half. Found by the benchmark, not by
+  reading.
+- **`retrieval_text` prepends the section heading**, so the third chunk of a
+  long EXPERIENCE section still says what it is. `content` stays clean for
+  reading and for Part 3's keyword index.
+- **Save chunks, then embed, then mark embedded.** A provider failure leaves
+  rows with `embedded_at` NULL — a durable record of which parts of the resume
+  the retriever cannot see — instead of leaving nothing and needing a re-parse
+  to find out.
+- **`replace_for_resume` deletes then inserts.** Re-chunking can produce
+  *fewer* pieces, and upserting by ordinal would leave the previous run's tail
+  behind as rows matching no part of the document.
+- **The `\n...\n` strip in `retrieve_context` stays** for now: a Chroma volume
+  outlives a deploy, so chunks written by the old chunker remain retrievable
+  until each resume is re-indexed.
+
+**Measured effect**, both chunkers scored at identical embedding dimensions so
+the comparison is of chunkers and not of collision luck:
+
+| chunker | lexical r@3 / p@1 | semantic r@3 / p@1 |
+|---|---|---|
+| old (paragraph packing + duplicated overlap) | 1.00 / 1.00 | 0.67 / 0.00 |
+| new (section-aware, paragraph boundaries) | 1.00 / 1.00 | 0.67 / 0.17 |
+
+Modest, and honestly reported: the lexical stand-in embedder cannot reward
+better structure much, because its whole vocabulary is term overlap. The real
+wins here are structural — chunks are inspectable in SQL, re-indexable without
+re-embedding, and job-aligned rather than budget-aligned.
+
+**A correction to Part 1's recorded numbers.** Part 1 measured the semantic
+tier at 0.50 / 0.17. That was taken with 512 hash buckets for a 229-token
+vocabulary, where collisions decided rankings — a 46-character chunk that
+shared one colliding bucket with the query outscored the paragraph that
+answered it, and the score swung between 0.33 and 0.67 purely with the
+dimension count. The harness now uses 4096, and the old pipeline re-measured
+there scores 0.67 / 0.00. The benchmark was measuring its own arithmetic as
+much as the pipeline.
 
 ### Why testing came before the rest of Phase 1
 Three genuine bugs were invisible to the test suite and only surfaced by driving

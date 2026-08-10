@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
+    from app.models.resume_chunk import ResumeChunk
     from app.models.user import User
 
 
@@ -39,3 +40,10 @@ class Resume(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
 
     user: Mapped["User"] = relationship(back_populates="resumes")
+    # Deleting a resume takes its chunks with it, in the database as well as
+    # via the FK, so the ORM and the schema agree.
+    chunks: Mapped[list["ResumeChunk"]] = relationship(
+        back_populates="resume",
+        cascade="all, delete-orphan",
+        order_by="ResumeChunk.ordinal",
+    )
