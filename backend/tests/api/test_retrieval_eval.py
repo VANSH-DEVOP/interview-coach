@@ -35,6 +35,7 @@ from app.models.resume import Resume
 from app.models.resume_chunk import ResumeChunk
 from app.repositories.resume_chunk_repository import ResumeChunkRepository
 from app.services.ai import retrieval_metrics
+from app.services.ai.query import rewrite_for_follow_up
 from app.services.ai.rag import RAGService, ResumeChunker
 from app.services.ai.retrieval import HybridRetriever
 from app.services.ai.vector_store import ChromaVectorStore
@@ -179,6 +180,37 @@ SEMANTIC_QUERIES = [
     ("experience reducing service latency", "gRPC"),
 ]
 
+# Follow-up exchanges as the generator actually forms them: a real question and
+# a real, padded answer, with the chunk that should be retrieved. These measure
+# *query rewriting* rather than the retrievers -- the raw query is what the
+# generator used to issue, and the rewritten one is what it issues now.
+FOLLOWUP_EXCHANGES = [
+    (
+        "Tell me about a performance win.",
+        "Yeah so I mean we had a lot going on but basically I introduced gRPC "
+        "between the routing and dispatch services and it helped a lot with latency.",
+        "gRPC",
+    ),
+    (
+        "What have you done with data pipelines?",
+        "Honestly quite a bit over the years, but the main one was that I built "
+        "an event pipeline on Kafka for shipment updates.",
+        "Kafka moving four million",
+    ),
+    (
+        "Tell me about your education.",
+        "I studied for my degree at the University of Pune, and did a thesis on "
+        "compiler optimisation.",
+        "University of Pune",
+    ),
+    (
+        "Any open source?",
+        "A little here and there, mostly Ledgerkit which is a bookkeeping library "
+        "I wrote.",
+        "Ledgerkit",
+    ),
+]
+
 # Measured, not aspirational: what this pipeline scores today. Assertions are
 # floors, so a regression fails and an improvement asks to have the number
 # raised.
@@ -211,6 +243,10 @@ BASELINE = {
     "lexical": {"recall@3": 1.0, "precision@1": 1.0},
     "semantic": {"recall@3": 0.5, "precision@1": 0.33},
 }
+
+# Part 5. Dropping the filler from a rambling answer moved precision@1 from
+# 0.75 to 1.00 on the exchanges above; recall was already saturated.
+FOLLOWUP_BASELINE = {"recall@3": 1.0, "precision@1": 1.0}
 
 
 @pytest.fixture(autouse=True)
@@ -333,6 +369,46 @@ async def test_retrieval_meets_the_recorded_baseline(indexed, capsys, tier):
 
     for metric, floor in BASELINE[tier].items():
         assert scores["hybrid"][metric] >= floor, f"{tier} {metric} regressed"
+
+
+async def test_query_rewriting_beats_the_raw_exchange(indexed, capsys):
+    """The generator used to embed the whole question and the whole answer.
+
+    A candidate's answer is mostly filler around one concrete claim, and the
+    claim is what the resume should be searched for. Both variants are scored
+    so the comparison is visible rather than asserted.
+    """
+    dense, _, _, resume_id = indexed
+
+    scores = {}
+    for label, build in (
+        ("raw", lambda q, a: f"{q}\n{a}"),
+        ("rewritten", rewrite_for_follow_up),
+    ):
+        found = correct = 0
+        for question, answer, expected in FOLLOWUP_EXCHANGES:
+            chunks = await _ranked(dense, "dense", resume_id, build(question, answer))
+            if any(expected in chunk for chunk in chunks):
+                found += 1
+            if chunks and expected in chunks[0]:
+                correct += 1
+        scores[label] = {
+            "recall@3": found / len(FOLLOWUP_EXCHANGES),
+            "precision@1": correct / len(FOLLOWUP_EXCHANGES),
+        }
+
+    with capsys.disabled():
+        print("\n  [follow-up queries]")
+        for label, result in scores.items():
+            print(
+                f"    {label:9} recall@3={result['recall@3']:.2f} "
+                f"precision@1={result['precision@1']:.2f}"
+            )
+
+    for metric, floor in FOLLOWUP_BASELINE.items():
+        assert scores["rewritten"][metric] >= floor, f"follow-up {metric} regressed"
+    # The rewrite must never be worse than issuing the raw exchange.
+    assert scores["rewritten"]["precision@1"] >= scores["raw"]["precision@1"]
 
 
 # -- Machinery the later parts must not break ----------------------------------

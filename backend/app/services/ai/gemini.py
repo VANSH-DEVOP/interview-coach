@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 from app.services.ai import retrieval_metrics
 from app.services.ai.base import GeneratedQuestion, InterviewSpec, QuestionGenerator
 from app.services.ai.gemini_client import GeminiClient
+from app.services.ai.query import rewrite_for_follow_up, rewrite_for_role
+from app.services.ai.untrusted import Fence
 
 if TYPE_CHECKING:
     from app.services.ai.masking import Redactor
@@ -81,6 +83,7 @@ class GeminiQuestionGenerator(QuestionGenerator):
         resume_id: uuid.UUID | None,
         query: str,
         purpose: "Purpose" = "initial_questions",
+        fence: Fence | None = None,
     ) -> tuple[str, bool]:
         """Build the resume section of a prompt, preferring RAG over truncation.
 
@@ -110,7 +113,8 @@ class GeminiQuestionGenerator(QuestionGenerator):
                         len(context),
                         resume_id,
                     )
-                    return f"\nCandidate resume excerpt (most relevant):\n{context}", True
+                    excerpt = fence.wrap(context) if fence else context
+                    return f"\nCandidate resume excerpt (most relevant):\n{excerpt}", True
                 reason = "not_indexed"
                 logger.info(
                     "No indexed chunks for resume %s; using truncated resume text.",
@@ -128,7 +132,10 @@ class GeminiQuestionGenerator(QuestionGenerator):
             # that sees every route to a truncated-resume prompt, including the
             # ones where retrieval was never called.
             retrieval_metrics.record_full_text_fallback(purpose=purpose, reason=reason)
-            return f"\nCandidate resume excerpt:\n{resume_text[:4000]}", False
+            excerpt = resume_text[:4000]
+            if fence:
+                excerpt = fence.wrap(excerpt)
+            return f"\nCandidate resume excerpt:\n{excerpt}", False
         return "", False
 
     async def initial_questions(
@@ -142,11 +149,15 @@ class GeminiQuestionGenerator(QuestionGenerator):
         role = target_role or "a general software engineering role"
         spec = spec or InterviewSpec()
 
+        # The resume is uploaded by the candidate, so it is untrusted input to
+        # a prompt whose output shapes their own interview.
+        fence = Fence()
         resume_context, used_rag = await self._resume_context(
             resume_text=resume_text,
             resume_id=resume_id,
-            query=f"skills and experience relevant to {role}",
+            query=rewrite_for_role(role),
             purpose="initial_questions",
+            fence=fence,
         )
 
         type_instruction = _TYPE_INSTRUCTIONS.get(
@@ -163,7 +174,8 @@ class GeminiQuestionGenerator(QuestionGenerator):
             f"{difficulty_instruction} "
             'Respond as JSON: {"questions": [{"content": str, "question_type": '
             '"behavioral"|"technical"}]}.'
-            f"{resume_context}"
+            + (f"\n\n{fence.instruction}" if resume_context else "")
+            + f"{resume_context}"
         )
         payload = await self._client.generate_json(
             system_instruction=_SYSTEM, prompt=prompt
@@ -213,11 +225,13 @@ class GeminiQuestionGenerator(QuestionGenerator):
         # Retrieval is keyed on the answer, not the role: the useful follow-up
         # is the one that probes a claim the candidate just made against what
         # the resume actually says.
+        fence = Fence()
         resume_context, used_rag = await self._resume_context(
             resume_text=resume_text,
             resume_id=resume_id,
-            query=f"{question}\n{answer}",
+            query=rewrite_for_follow_up(question, answer),
             purpose="follow_up",
+            fence=fence,
         )
 
         prompt = (
@@ -226,7 +240,8 @@ class GeminiQuestionGenerator(QuestionGenerator):
             "Prefer a follow-up that digs into a specific claim in the answer, "
             "using the resume excerpt below for concrete detail where relevant. "
             'Respond as JSON: {"ask_follow_up": bool, "content": str}. '
-            f"\nQuestion: {question}\nAnswer: {answer}"
+            f"\n\n{fence.instruction}"
+            f"\nQuestion: {question}\nAnswer: {fence.wrap(answer)}"
             f"{resume_context}"
         )
         payload = await self._client.generate_json(

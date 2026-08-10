@@ -165,9 +165,13 @@ async def test_gemini_follow_up_retrieves_rag_context_keyed_on_the_answer():
         resume_id=resume_id,
     )
 
-    # Retrieval is keyed on the exchange, not the target role.
-    assert "I optimised our cache." in rag.queries[0]
-    assert "Tell me about performance work." in rag.queries[0]
+    # Retrieval is keyed on the exchange, not the target role. The query is
+    # rewritten before it is issued, so assert the distinctive terms survive
+    # rather than the raw phrasing -- the filler ("I", "our", "tell me about")
+    # is dropped on purpose.
+    assert "optimised" in rag.queries[0]
+    assert "cache" in rag.queries[0]
+    assert "performance" in rag.queries[0]
     # Tagged so follow-up retrieval can be told from initial-question retrieval
     # in the metrics: the two run very different queries and their hit rates
     # have to be readable apart.

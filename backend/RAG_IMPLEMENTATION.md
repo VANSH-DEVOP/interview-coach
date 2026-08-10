@@ -19,10 +19,9 @@ This ensures questions are **personalized** to the candidate's actual experience
 > fixed-size chunking with a duplicating overlap, one embedding HTTP call per
 > chunk, no caching, no relevance threshold. `goals.md` holds a six-part plan
 > to take it further. **Parts 1 (observability + benchmark), 2 (chunks as rows
-> + structure-aware chunking), 3 (hybrid retrieval) and 4 (embedding cache)
-> have landed**; see
-> below. What is still missing: query rewriting and prompt-injection defence
-> (part 5), multi-step orchestration (part 6).
+> + structure-aware chunking), 3 (hybrid retrieval), 4 (embedding cache) and
+> 5 (query rewriting + prompt-injection defence) have landed**; see
+> below. What is still missing: multi-step orchestration (part 6).
 
 ## Observability
 
@@ -133,6 +132,40 @@ fixture resume costs 9 provider calls, re-indexing it costs **0**.
 **Question sets are deliberately not cached.** It would save one call per
 interview and make a candidate who practises the same role twice sit the
 identical interview both times. The quota is spent on indexing, not generation.
+
+## Query rewriting
+
+The generator issues a rewritten query, not the raw phrase it has to hand.
+`rewrite()` drops interview filler, collapses repeats, keeps technical tokens
+(`C++`, `.NET`, `8.0`, `gRPC`) and caps the length.
+
+- **Initial questions**: `"skills and experience relevant to {role}"` → the
+  role's own words. The four dropped terms each match most of any resume.
+- **Follow-ups**: the whole question plus the whole answer → the distinctive
+  terms, answer first, so the cap bites the interviewer's phrasing rather than
+  the candidate's specifics.
+
+Deterministic rather than a model call: rewriting via the provider costs one
+request per retrieval against a ceiling of twenty per day.
+
+Measured on realistic follow-up exchanges (`FOLLOWUP_EXCHANGES` in the
+benchmark), precision@1 went from 0.75 raw to 1.00 rewritten.
+
+## Prompt injection
+
+The resume and the answers are written by the person being assessed. The
+evaluator is the high-value target: the candidate grades themselves.
+
+Each untrusted span is fenced with a per-prompt random nonce and the prompt
+states that fenced text is data rather than instructions. An attacker cannot
+close a fence whose nonce they cannot predict, so injected text cannot escape
+into instruction position; answers are fenced individually so a forged
+`Q3:/A3:` turn stays inside the answer that contains it.
+
+Phrase matching is deliberately **not** used — blocklists on natural language
+fail against paraphrase and mangle legitimate text. And fencing is not a
+guarantee: the controls that bound the damage are the 0–10 score clamp, the
+JSON shape validation, and the fact that evaluation output is never executed.
 
 ## Architecture
 
