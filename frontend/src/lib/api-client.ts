@@ -13,6 +13,17 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1
 const ACCESS_TOKEN_KEY = "ip_access_token";
 const REFRESH_TOKEN_KEY = "ip_refresh_token";
 
+/** What kind of failure this was, which is what callers actually branch on. */
+export type ErrorKind =
+  /** The server said no to these credentials: 401 or 403. */
+  | "auth"
+  /** The request was wrong: 4xx other than 401/403. */
+  | "client"
+  /** The server broke: 5xx. */
+  | "server"
+  /** No response at all -- offline, DNS, CORS, the API is not running. */
+  | "network";
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -21,6 +32,39 @@ export class ApiError extends Error {
     public details?: unknown
   ) {
     super(message);
+  }
+
+  get kind(): ErrorKind {
+    if (this.status === 0) return "network";
+    if (this.status === 401 || this.status === 403) return "auth";
+    if (this.status >= 500) return "server";
+    return "client";
+  }
+
+  /**
+   * True when retrying later might work, and the session is *not* implicated.
+   *
+   * The distinction the UI needs: an auth failure means sign in again, while
+   * everything here means the credentials are fine and the server is not.
+   * Treating the second as the first is what makes an outage look like a
+   * logout.
+   */
+  get isTransient(): boolean {
+    return this.kind === "network" || this.kind === "server";
+  }
+}
+
+/**
+ * A request that never reached the server.
+ *
+ * Subclasses ApiError rather than standing alone so that the `err instanceof
+ * ApiError ? err.message : "..."` pattern every page already uses shows the
+ * message below instead of falling through to a generic one. Status 0 is the
+ * usual convention for "no response"; `kind` reads it back as "network".
+ */
+export class NetworkError extends ApiError {
+  constructor(public cause?: unknown) {
+    super(0, "network_error", "Unable to reach the server. Check your connection and try again.");
   }
 }
 
@@ -71,7 +115,16 @@ async function rawRequest<T>(
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(`${API_URL}${path}`, { ...options, headers });
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, { ...options, headers });
+  } catch (error) {
+    // fetch rejects only when no response was received: offline, DNS failure,
+    // connection refused, CORS. An HTTP error status resolves normally and is
+    // handled below. Without this the caller gets a bare TypeError
+    // ("Failed to fetch"), which is neither an ApiError nor showable.
+    throw new NetworkError(error);
+  }
 
   if (response.status === 204) return undefined as T;
 
@@ -93,9 +146,26 @@ async function rawRequest<T>(
   return (await response.json()) as T;
 }
 
-async function tryRefresh(): Promise<boolean> {
+type RefreshOutcome =
+  /** New tokens are stored; replay the original request. */
+  | { status: "refreshed" }
+  /** The server refused the refresh token. The session is over. */
+  | { status: "rejected" }
+  /** Could not find out -- the server was unreachable or broken. */
+  | { status: "unavailable"; error: ApiError };
+
+/**
+ * Exchange the refresh token for a new pair.
+ *
+ * The three outcomes exist because this used to have two, and collapsing
+ * "refused" into "could not ask" is a bug with teeth: a refresh attempted
+ * while offline cleared the tokens, so a momentary network drop *destroyed a
+ * live session* and dumped the user on the login page. Tokens are now cleared
+ * only when the server itself rejects them.
+ */
+async function tryRefresh(): Promise<RefreshOutcome> {
   const refreshToken = readCookie(REFRESH_TOKEN_KEY);
-  if (!refreshToken) return false;
+  if (!refreshToken) return { status: "rejected" };
   try {
     const tokens = await rawRequest<TokenPair>(
       "/auth/refresh",
@@ -103,10 +173,13 @@ async function tryRefresh(): Promise<boolean> {
       null
     );
     setTokens(tokens);
-    return true;
-  } catch {
+    return { status: "refreshed" };
+  } catch (error) {
+    if (error instanceof ApiError && error.isTransient) {
+      return { status: "unavailable", error };
+    }
     clearTokens();
-    return false;
+    return { status: "rejected" };
   }
 }
 
@@ -114,10 +187,15 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   try {
     return await rawRequest<T>(path, options);
   } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 401) throw error;
+
     // One transparent retry after refreshing an expired access token.
-    if (error instanceof ApiError && error.status === 401 && (await tryRefresh())) {
-      return rawRequest<T>(path, options);
-    }
+    const outcome = await tryRefresh();
+    if (outcome.status === "refreshed") return rawRequest<T>(path, options);
+    // The 401 came back because we could not renew the token, not because the
+    // session is finished. Reporting it as "unauthorized" would send the user
+    // to a login page that cannot work either; report what actually happened.
+    if (outcome.status === "unavailable") throw outcome.error;
     throw error;
   }
 }

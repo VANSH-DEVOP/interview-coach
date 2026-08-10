@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-InterviewPilot AI — resume upload → AI-generated mock interview → evaluation report. Monorepo at `interview-coach/`: `backend/` (FastAPI, Python 3.12, async SQLAlchemy, PostgreSQL 16) and `frontend/` (Next.js 15 App Router, React 19, Tailwind, no UI library beyond hand-rolled shadcn-style primitives).
+InterviewPilot AI — resume upload → AI-generated mock interview → evaluation report. Monorepo at `interview-coach/`: `backend/` and `frontend/`. No UI library beyond hand-rolled shadcn-style primitives.
 
 ## Commands
 
@@ -23,22 +23,12 @@ source .venv/bin/activate
 pip install -e ".[dev]"       # do this after pulling; deps drift (chromadb was added late)
 alembic upgrade head
 uvicorn app.main:app --reload
-
-pytest                                       # whole suite (asyncio_mode = auto)
-pytest tests/test_evaluator.py -v            # one file
-pytest tests/test_evaluator.py::test_name -v # one test
-ruff check .
-mypy app
 ```
 
 ### Frontend
 ```bash
 cd frontend
-npm install
 NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1 npm run dev
-npm run typecheck   # tsc --noEmit
-npm run build
-npm run lint
 ```
 
 ## Environment gotchas
@@ -144,7 +134,7 @@ A missing worker flips `/health` `status` to `degraded`, unlike an AI or queue f
 
 Prefer an API test for anything touching ownership: the service fakes implement `get_owned` themselves, so they prove the service *calls* it, not that the SQL filters by user.
 
-Frontend: `npm test` (vitest + jsdom + React Testing Library). `tsc --noEmit` covers test files too.
+Frontend: `npm test` (vitest + jsdom + React Testing Library). `tsc --noEmit` covers test files too. `npm run lint` is unconfigured (`next lint` prompts to set ESLint up) — CI runs typecheck, tests, and build instead.
 
 ## Frontend
 
@@ -152,6 +142,17 @@ Frontend: `npm test` (vitest + jsdom + React Testing Library). `tsc --noEmit` co
 - Tokens are stored in **cookies** (`ip_access_token`, `ip_refresh_token`) so `middleware.ts` can gate routes; `api-client.ts` does one transparent refresh-and-retry on a 401. `middleware.ts` is a UX guard only — real authorization is server-side.
 - `src/types/index.ts` hand-mirrors the backend Pydantic schemas. Changing a response schema means editing both sides.
 - `src/hooks/use-auth.ts` is the single entry point for login/register/logout and current-user state.
+
+### Failure kinds
+
+`ApiError.kind` (`auth` / `client` / `server` / `network`) is the distinction the UI runs on, and `isTransient` is the one that matters: **only an auth failure may empty the user or clear tokens.** A server that is down, a dropped connection, and a 500 all leave the session alone — otherwise an outage renders exactly like a logout and the user "fixes" it by signing in against a backend that cannot answer.
+
+Consequences to preserve when touching `api-client.ts`:
+
+- `fetch` rejecting (offline, DNS, connection refused, CORS) becomes a `NetworkError` with status 0. It subclasses `ApiError` so the `err instanceof ApiError ? err.message : "..."` pattern used across the pages shows a real message.
+- `tryRefresh()` returns three outcomes, not a boolean. It clears tokens **only** on `rejected` (the server refused the token); an unreachable or 500-ing refresh endpoint returns `unavailable` and the session survives. Collapsing those two back into one is how a momentary network drop destroys a live session.
+- A 401 that could not be renewed surfaces as the transient error, not as `unauthorized`.
+- `useAuth().connectionError` carries the transient case; `(app)/layout.tsx` renders `ConnectionBanner` from it and passes its own `reload` as the retry.
 
 ## Note on the README
 

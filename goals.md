@@ -189,13 +189,29 @@ MetricsCollector records
 Response returned
 
 - [ ] **Query re-writing** the current pipeline doesn't check for any threats to the prompt injection we might need some query re-writing too.
-- [ ] This treats every error the same:
+- [x] This treats every error the same:
 expired token (which the API client may already have retried)
 backend outage
 network disconnected
 server returning 500
 In all those cases, the UI ends up looking as if the user is logged out.
 A more informative approach would distinguish authentication failures (401/403) from transient network or server failures, allowing the UI to show "Unable to reach the server" instead of appearing to log the user out.
+  → **Done 2026-08-10.** `ApiError.kind` (auth/client/server/network) plus
+  `isTransient`; only an auth failure may empty the user or clear tokens.
+  Two bugs were worse than the report suggested:
+  - `tryRefresh()` cleared the tokens on *any* failure, so a refresh attempted
+    while offline **destroyed a live session** — the refresh token was very
+    likely still valid, nobody had asked the server. It now returns three
+    outcomes and clears only on a server refusal.
+  - A 401 that could not be renewed surfaced as `unauthorized`, sending the
+    user to a login page that could not work either. It now surfaces the
+    transient error.
+  `fetch` rejecting became a `NetworkError` (status 0) subclassing `ApiError`,
+  so the ~20 existing `err instanceof ApiError ? err.message : "..."` call
+  sites show a real message with no edits. `useAuth().connectionError` feeds a
+  `ConnectionBanner` in the app shell that says the session is intact and
+  offers a retry. 17 new frontend tests; the 5 that pin the behaviour were
+  confirmed to fail against the old code.
 ## Changes Made
 - [x] **Changed Gemini_api_model** I changed gemini model to gemini-flash-latest and the test cases worked properly , I hanvn't checked for the application yet.
   → Confirmed correct: `gemini-flash-latest` is present in `GET /v1beta/models` and `generate_json` returns 200 against the live API. Propagated to `.env.example` and `docker-compose.yml`, which still said `gemini-1.5-flash`.
@@ -217,12 +233,21 @@ What is left, roughly in order of value:
 PII masking closed 2026-08-09; see the Discovery section for what it does and
 what it deliberately does not.
 
-Stale-report reconciliation closed 2026-08-09; see below.
+Stale-report reconciliation closed 2026-08-09. Token pruning, worker liveness
+and shared rate-limit counters closed 2026-08-10; the frontend's
+every-error-is-a-logout problem closed the same day. All are described below.
 
-1. **Remaining Discovery items** — production RAG, query rewriting / prompt
-   injection, and the frontend treating every error as a logout.
-2. **Phase 4 roadmap** — production RAG, multi-provider, streaming.
-3. **Phase 3 leftovers** — no coverage threshold, no dependency scanning.
+1. **Production RAG** — hybrid search, the LangChain/LangGraph pipeline in the
+   Discovery section, caching and metrics. The largest remaining item, and it
+   absorbs semantic chunking, embedding caching, LangGraph orchestration and
+   query rewriting / prompt-injection defence.
+2. **Observability** — AI-call telemetry (latency, token spend, fallback rate)
+   is the cheapest real win; the counters exist and `/health` already has the
+   shape for it. Error reporting is what the worker's missing restart alarm
+   needs.
+3. **Security** — CSP + headers, per-user quotas, the httpOnly cookie BFF.
+4. **Phase 4 roadmap** — multi-provider, streaming, S3/R2 storage.
+5. **Phase 3 leftovers** — no coverage threshold, no dependency scanning.
 
 ### Stale-report reconciliation — ✅ COMPLETE (2026-08-09)
 A Redis restart dropped the queued jobs and nothing ever moved the orphaned

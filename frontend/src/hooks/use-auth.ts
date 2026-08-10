@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 
 import {
   api,
+  ApiError,
   clearTokens,
   getAccessToken,
   getRefreshToken,
@@ -17,22 +18,45 @@ import type { TokenPair, User } from "@/types";
 interface AuthState {
   user: User | null;
   isLoading: boolean;
+  /**
+   * The server could not be asked who the user is. Not the same as being
+   * signed out, and the UI must not present it as such.
+   */
+  connectionError: ApiError | null;
 }
 
 export function useAuth() {
   const router = useRouter();
-  const [state, setState] = useState<AuthState>({ user: null, isLoading: true });
+  const [state, setState] = useState<AuthState>({
+    user: null,
+    isLoading: true,
+    connectionError: null,
+  });
 
   const loadUser = useCallback(async () => {
     if (!getAccessToken()) {
-      setState({ user: null, isLoading: false });
+      setState({ user: null, isLoading: false, connectionError: null });
       return;
     }
     try {
       const user = await api.get<User>("/users/me");
-      setState({ user, isLoading: false });
-    } catch {
-      setState({ user: null, isLoading: false });
+      setState({ user, isLoading: false, connectionError: null });
+    } catch (error) {
+      // The distinction this whole branch exists for. A backend that is down,
+      // a dropped connection and a 500 all used to land in `user: null`, which
+      // renders exactly like a logout -- so an outage looked as though the
+      // session had ended, and signing in again was the obvious (useless)
+      // response. Only an auth failure clears the user now; anything else
+      // keeps whatever we last knew and reports the real problem.
+      if (error instanceof ApiError && error.isTransient) {
+        setState((previous) => ({
+          user: previous.user,
+          isLoading: false,
+          connectionError: error,
+        }));
+        return;
+      }
+      setState({ user: null, isLoading: false, connectionError: null });
     }
   }, []);
 
@@ -85,7 +109,7 @@ export function useAuth() {
         }
       }
       clearTokens();
-      setState({ user: null, isLoading: false });
+      setState({ user: null, isLoading: false, connectionError: null });
       router.push("/login");
     },
     [router]

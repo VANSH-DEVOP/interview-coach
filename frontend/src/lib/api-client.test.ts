@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, api, clearTokens, getAccessToken, setTokens } from "./api-client";
+import { ApiError, NetworkError, api, clearTokens, getAccessToken, setTokens } from "./api-client";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
@@ -272,5 +272,87 @@ describe("refresh and retry", () => {
 
     expect(callInit(2).method).toBe("POST");
     expect(callInit(2).body).toBe(JSON.stringify({ title: "Practice" }));
+  });
+});
+
+// -- Telling an outage apart from a logout --------------------------------------
+//
+// The failure these cover is one the app used to get exactly backwards: a
+// backend that was down, a dropped connection and a 500 were all reported as
+// though the session had ended.
+
+describe("unreachable server", () => {
+  it("turns a fetch rejection into a showable ApiError", async () => {
+    // fetch rejects only when no response arrives; a bare TypeError here is
+    // neither an ApiError nor something a page can display.
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+
+    const error = await expectApiError(api.get("/things"));
+
+    expect(error).toBeInstanceOf(NetworkError);
+    expect(error.kind).toBe("network");
+    expect(error.message).toMatch(/unable to reach the server/i);
+  });
+
+  it("classifies statuses so callers can branch on the kind", () => {
+    expect(new ApiError(401, "unauthorized", "x").kind).toBe("auth");
+    expect(new ApiError(403, "forbidden", "x").kind).toBe("auth");
+    expect(new ApiError(404, "not_found", "x").kind).toBe("client");
+    expect(new ApiError(500, "internal_error", "x").kind).toBe("server");
+    // Only the last two are worth retrying, and neither implicates the session.
+    expect(new ApiError(500, "internal_error", "x").isTransient).toBe(true);
+    expect(new NetworkError().isTransient).toBe(true);
+    expect(new ApiError(401, "unauthorized", "x").isTransient).toBe(false);
+  });
+
+  it("keeps the session when the network drops mid-request", async () => {
+    setTokens(TOKENS);
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+
+    await api.get("/things").catch(() => undefined);
+
+    // Signing the user out over a blip is what made an outage look like a logout.
+    expect(getAccessToken()).toBe("access-1");
+  });
+
+  it("keeps the session when the refresh cannot be reached", async () => {
+    setTokens(TOKENS);
+    fetchMock
+      .mockResolvedValueOnce(errorResponse(401, "unauthorized")) // access token expired
+      .mockRejectedValueOnce(new TypeError("Failed to fetch")); // refresh unreachable
+
+    const error = await expectApiError(api.get("/things"));
+
+    // The refresh token may well still be valid -- nobody asked the server.
+    expect(getAccessToken()).toBe("access-1");
+    // And the user is told the truth rather than "unauthorized", which would
+    // send them to a login page that cannot work either.
+    expect(error.kind).toBe("network");
+  });
+
+  it("keeps the session when the refresh endpoint returns a 500", async () => {
+    setTokens(TOKENS);
+    fetchMock
+      .mockResolvedValueOnce(errorResponse(401, "unauthorized"))
+      .mockResolvedValueOnce(errorResponse(500, "internal_error"));
+
+    const error = await expectApiError(api.get("/things"));
+
+    expect(getAccessToken()).toBe("access-1");
+    expect(error.kind).toBe("server");
+  });
+
+  it("still clears the session when the server actually rejects the refresh", async () => {
+    // The other half of the contract: a genuinely dead session must not be
+    // kept alive by the caution above.
+    setTokens(TOKENS);
+    fetchMock
+      .mockResolvedValueOnce(errorResponse(401, "unauthorized"))
+      .mockResolvedValueOnce(errorResponse(401, "token_revoked"));
+
+    const error = await expectApiError(api.get("/things"));
+
+    expect(getAccessToken()).toBeNull();
+    expect(error.kind).toBe("auth");
   });
 });
