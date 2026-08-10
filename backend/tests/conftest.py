@@ -238,6 +238,51 @@ async def api(db_session, db_connection, monkeypatch):
         app.dependency_overrides.pop(get_session, None)
 
 
+# -- Redis-backed fixtures -----------------------------------------------------
+
+# A database of its own, and flushed: these tests delete keys, and doing that to
+# a developer's default Redis would be unforgivable.
+TEST_REDIS_URL = os.getenv("TEST_REDIS_URL", "redis://localhost:6379/15")
+
+
+@pytest.fixture
+async def redis_pool():
+    """A flushed Redis, or skip the tests that need one.
+
+    Same bargain as `database_url`: `pytest` stays useful on a laptop with
+    nothing running, and CI sets REQUIRE_TEST_REDIS so a broken service
+    container fails the build instead of silently skipping the coverage it was
+    supposed to provide.
+    """
+    from arq import create_pool
+    from arq.connections import RedisSettings
+
+    settings = RedisSettings.from_dsn(TEST_REDIS_URL)
+    # arq retries five times with a delay by default, which is right at startup
+    # and wrong here: with no Redis running it turns an instant skip into a
+    # fifteen-second one, on every test that asks for this.
+    settings.conn_retries = 1
+    settings.conn_retry_delay = 0
+
+    try:
+        pool = await create_pool(settings)
+    except Exception as exc:  # noqa: BLE001 - any connection failure means skip
+        message = (
+            f"No test Redis reachable ({type(exc).__name__}: {exc}). "
+            f"Start Redis or set TEST_REDIS_URL (currently {TEST_REDIS_URL})."
+        )
+        if os.getenv("REQUIRE_TEST_REDIS"):
+            pytest.fail(message, pytrace=False)
+        pytest.skip(message)
+
+    await pool.flushdb()
+    try:
+        yield pool
+    finally:
+        await pool.flushdb()
+        await pool.aclose()
+
+
 @pytest.fixture
 def storage_root(tmp_path, monkeypatch):
     """Point blob storage at a temp directory so tests leave nothing behind.

@@ -241,11 +241,25 @@ EvaluationQueueDep = Annotated[EvaluationQueue, Depends(get_evaluation_queue)]
 # module: these signatures must stay resolvable at runtime, or FastAPI cannot
 # see the Depends marker and silently reinterprets the parameter as a query
 # field (which is exactly what happened when this lived in app/core).
+def rate_limit_store(request: Request):
+    """The Redis holding the shared counters, or None for per-process ones.
+
+    The arq pool doubles as the store rather than opening a second one: it is a
+    connection pool to the same Redis, already built at startup, and the keys
+    live under their own prefix (arq owns `arq:*`). The consequence to know is
+    that no REDIS_URL means no shared counters -- correct today, since a
+    deployment with several API replicas needs the queue anyway.
+    """
+    return getattr(request.app.state, "arq_pool", None)
+
+
 def limit_by_ip(scope: str):
     """Rate limit by client IP. For endpoints with no authenticated user."""
 
     async def dependency(request: Request) -> None:
-        rate_limit.enforce(rate_limit.client_ip(request), scope=scope)
+        await rate_limit.enforce(
+            rate_limit.client_ip(request), scope=scope, redis=rate_limit_store(request)
+        )
 
     return dependency
 
@@ -259,7 +273,9 @@ def limit_by_user(scope: str):
     consuming anyone's budget.
     """
 
-    async def dependency(user: CurrentUser) -> None:
-        rate_limit.enforce(str(user.id), scope=scope)
+    async def dependency(request: Request, user: CurrentUser) -> None:
+        await rate_limit.enforce(
+            str(user.id), scope=scope, redis=rate_limit_store(request)
+        )
 
     return dependency

@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import rate_limit
 from app.core.config import get_settings
 from app.db.session import get_session
 from app.services import job_queue
@@ -62,6 +63,22 @@ class WorkerHealthResponse(BaseModel):
     detail: str | None = None
 
 
+class RateLimitHealth(BaseModel):
+    """Where the counters live, and whether they stayed there.
+
+    `store` is `in_process` when there is no Redis pool, which means the limits
+    apply per replica: N replicas allow N x the intended ceiling against a quota
+    that is shared by all of them. `fallbacks` counts requests that had a Redis
+    and could not use it, and so were counted per-process anyway.
+    """
+
+    enabled: bool
+    store: Literal["redis", "in_process"]
+    fallbacks: int
+    last_error: str | None = None
+    last_at: str | None = None
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     environment: str
@@ -69,6 +86,7 @@ class HealthResponse(BaseModel):
     ai: AiHealth
     queue: QueueHealth
     worker: WorkerHealthResponse
+    rate_limit: RateLimitHealth
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -102,6 +120,15 @@ async def health(
         database=database,
         worker=WorkerHealthResponse(
             expected=worker_expected, alive=worker.alive, detail=worker.detail
+        ),
+        # Reported, not acted on: a per-process counter still bounds abuse, it
+        # just bounds it once per replica.
+        rate_limit=RateLimitHealth.model_validate(
+            {
+                "enabled": settings.RATE_LIMIT_ENABLED,
+                "store": "redis" if pool is not None else "in_process",
+                **rate_limit.snapshot(),
+            }
         ),
         ai=AiHealth.model_validate(
             {"configured": bool(settings.GEMINI_API_KEY), **degradation.snapshot()}

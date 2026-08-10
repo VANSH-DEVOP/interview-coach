@@ -268,10 +268,8 @@ The same cron is now the obvious home for the expired-token pruning below.
   hourly at `:07`. See below.
 - **Rate-limit defaults sit above the account ceiling** (20/user/hour vs 20/day
   for the whole free-tier account). Lower them, or move off the free tier.
-- **Move rate-limit counters to Redis** before running more than one API replica
-  — they are per-process today, so N replicas means N× the intended ceiling.
-  Redis is now in the stack, so this is a small change rather than a new
-  dependency.
+- ~~**Move rate-limit counters to Redis**~~ ✅ 2026-08-10 — shared counters when
+  `REDIS_URL` is set, in-process otherwise. See below.
 - ~~**The `worker` service is not covered by a health check.**~~ ✅ 2026-08-09 —
   `/health` has a `worker` block and the container has an `arq --check`
   healthcheck. See below. Still no *restart alarm*: an unhealthy container is
@@ -302,6 +300,31 @@ accepting interviews and every report sits `PENDING`. When the heartbeat cannot
 be *read* at all, `alive` is null rather than false — Redis being unreachable
 is already reported as a queue fallback, and calling the worker dead on top of
 that is a second alarm for one fault, and probably a wrong one.
+
+### Shared rate-limit counters — ✅ COMPLETE (2026-08-10)
+The counters were per-process, so N API replicas allowed N× the intended
+ceiling against limits that guard *shared* things: the Gemini account's daily
+quota, and guesses against one account. `enforce()` is now async and takes a
+store — the arq pool when `REDIS_URL` is set, `None` otherwise. No new
+dependency; `redis` already arrives with arq.
+
+- **Counting and expiry are one Lua script.** `INCR` then `EXPIRE` from the
+  client is two round trips and not atomic: a process that dies between them
+  leaves a counter with no TTL, and that key locks its subject out
+  *permanently*. A test asserts every counter carries an expiry.
+- **A failing Redis degrades to in-process counters,** and is recorded.
+  Failing open turns a Redis blip into unbounded credential stuffing; failing
+  closed turns it into a total auth outage. Counting per replica is worse than
+  the design and better than either, so long as it is visible — `/health` grew
+  a `rate_limit` block (`store`, `fallbacks`) to keep it that way.
+- **No Redis is not a degradation,** the same distinction the evaluation queue
+  draws: a single process with no queue is the intended design.
+- The `redis_pool` fixture moved to `tests/conftest.py` and is now shared by
+  the queue and rate-limit integration tests.
+
+Still open, and unchanged by this: the AI defaults (20 req/user/hour) sit above
+the free tier's 20/day *account* ceiling, so they bound one user rather than
+account exhaustion. That is a number, not a mechanism.
 
 ### Why testing came before the rest of Phase 1
 Three genuine bugs were invisible to the test suite and only surfaced by driving

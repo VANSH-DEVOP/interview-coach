@@ -135,16 +135,16 @@ def test_window_prunes_expired_keys():
 # -- _enforce -----------------------------------------------------------------
 
 
-def test_enforce_raises_with_a_retry_after_header(monkeypatch):
+async def test_enforce_raises_with_a_retry_after_header(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "RATE_LIMIT_AUTH_ATTEMPTS", 2, raising=False)
     monkeypatch.setattr(settings, "RATE_LIMIT_AUTH_WINDOW_SECONDS", 60, raising=False)
 
-    rate_limit.enforce("1.2.3.4", scope="auth")
-    rate_limit.enforce("1.2.3.4", scope="auth")
+    await rate_limit.enforce("1.2.3.4", scope="auth")
+    await rate_limit.enforce("1.2.3.4", scope="auth")
 
     with pytest.raises(RateLimitedError) as excinfo:
-        rate_limit.enforce("1.2.3.4", scope="auth")
+        await rate_limit.enforce("1.2.3.4", scope="auth")
 
     exc = excinfo.value
     assert exc.status_code == 429
@@ -152,13 +152,13 @@ def test_enforce_raises_with_a_retry_after_header(monkeypatch):
     assert int(exc.headers["Retry-After"]) > 0
 
 
-def test_enforce_is_a_no_op_when_disabled(monkeypatch):
+async def test_enforce_is_a_no_op_when_disabled(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", False, raising=False)
     monkeypatch.setattr(settings, "RATE_LIMIT_AUTH_ATTEMPTS", 1, raising=False)
 
     for _ in range(50):
-        rate_limit.enforce("1.2.3.4", scope="auth")
+        await rate_limit.enforce("1.2.3.4", scope="auth")
 
 
 # -- HTTP ---------------------------------------------------------------------
@@ -199,17 +199,17 @@ async def test_failed_attempts_are_counted_not_just_successful_ones(
     assert (await client.post("/api/v1/auth/login", json=body)).status_code == 429
 
 
-def test_scopes_are_independent(monkeypatch):
+async def test_scopes_are_independent(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "RATE_LIMIT_AUTH_ATTEMPTS", 1, raising=False)
     monkeypatch.setattr(settings, "RATE_LIMIT_AI_REQUESTS", 5, raising=False)
 
-    rate_limit.enforce("same-key", scope="auth")
+    await rate_limit.enforce("same-key", scope="auth")
     with pytest.raises(RateLimitedError):
-        rate_limit.enforce("same-key", scope="auth")
+        await rate_limit.enforce("same-key", scope="auth")
 
     # Exhausting auth must not consume the AI budget, even for the same key.
-    rate_limit.enforce("same-key", scope="ai")
+    await rate_limit.enforce("same-key", scope="ai")
 
 
 async def test_ai_routes_reject_unauthenticated_before_consuming_a_slot(client):
@@ -261,3 +261,59 @@ async def test_ai_budget_is_per_user(client, stub_interviews, monkeypatch):
     assert (await client.post("/api/v1/interviews", json={"title": "a"})).status_code == 201
 
     app.dependency_overrides.pop(get_current_user, None)
+
+
+# -- Degrading to in-process counters ------------------------------------------
+
+
+class _BrokenRedis:
+    """A Redis whose every script call fails, the way an outage looks."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def register_script(self, script):
+        async def _call(keys, args):
+            self.attempts += 1
+            raise ConnectionError("connection refused")
+
+        return _call
+
+
+async def test_a_broken_redis_still_enforces_the_limit(monkeypatch):
+    """Failing open would turn a Redis blip into unbounded credential stuffing;
+    failing closed would turn it into a total auth outage. Neither: the counters
+    fall back to this process, so the limit holds, just per replica."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "RATE_LIMIT_AUTH_ATTEMPTS", 2, raising=False)
+    redis = _BrokenRedis()
+
+    await rate_limit.enforce("1.2.3.4", scope="auth", redis=redis)
+    await rate_limit.enforce("1.2.3.4", scope="auth", redis=redis)
+
+    with pytest.raises(RateLimitedError):
+        await rate_limit.enforce("1.2.3.4", scope="auth", redis=redis)
+    assert redis.attempts == 3
+
+
+async def test_a_broken_redis_is_recorded_not_swallowed(monkeypatch):
+    """Silently counting per-process is exactly the failure this reports: the
+    limits still look enforced while the shared ceiling is N times too loose."""
+    monkeypatch.setattr(get_settings(), "RATE_LIMIT_AUTH_ATTEMPTS", 5, raising=False)
+
+    await rate_limit.enforce("1.2.3.4", scope="auth", redis=_BrokenRedis())
+
+    state = rate_limit.snapshot()
+    assert state["fallbacks"] == 1
+    assert "ConnectionError" in str(state["last_error"])
+    assert state["last_at"] is not None
+
+
+async def test_no_redis_is_not_a_degradation(monkeypatch):
+    """A single process with no queue is the intended design, not a fault --
+    same distinction the evaluation queue draws."""
+    monkeypatch.setattr(get_settings(), "RATE_LIMIT_AUTH_ATTEMPTS", 5, raising=False)
+
+    await rate_limit.enforce("1.2.3.4", scope="auth", redis=None)
+
+    assert rate_limit.snapshot()["fallbacks"] == 0

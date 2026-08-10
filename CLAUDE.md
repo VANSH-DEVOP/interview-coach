@@ -120,6 +120,15 @@ The worker writes a heartbeat to Redis every `HEALTH_CHECK_INTERVAL_SECONDS` (30
 
 A missing worker flips `/health` `status` to `degraded`, unlike an AI or queue fallback. Nothing downstream covers for it: the API keeps accepting interviews and every report sits `PENDING` until a human notices. `alive` is `null`, not `false`, when the heartbeat could not be read at all (no pool, Redis unreachable) — that is already reported as a queue fallback, and the worker may be perfectly fine.
 
+## Rate limiting
+
+`app/core/rate_limit.py` is a pure mechanism — fixed-window counters, no knowledge of routes or users. The wiring (`limit_by_ip`, `limit_by_user`) lives in `app/api/deps.py` with the rest of the DI, and **must stay there**: that module deliberately has no `from __future__ import annotations`, because FastAPI has to resolve `Annotated[User, Depends(...)]` at runtime. When these dependencies lived in `core/`, FastAPI silently reinterpreted `user` as a *query parameter* and every AI route answered 422.
+
+`enforce()` is async and takes the store: the arq pool (`rate_limit_store()` in `deps.py`) when Redis is configured, `None` otherwise.
+
+- **Redis** — one counter per deployment. The limits guard *shared* things (the Gemini account's daily quota, guesses against one account), so per-replica counters would mean N× the intended ceiling. Counting and expiry happen in one Lua script: `INCR` then `EXPIRE` from the client is not atomic, and a process dying between them leaves a counter with no TTL that locks its subject out permanently.
+- **In-process** — correct for a single process, and the fallback when Redis fails. A Redis blip must not become either a total auth outage (fail closed) or unbounded credential stuffing (fail open), so the counters degrade to this process, get counted in `rate_limit.snapshot()`, and show up in `/health`'s `rate_limit` block. Keys are namespaced `ratelimit:{scope}:{key}`; arq owns `arq:*` in the same database.
+
 ## Storage
 
 `app/services/storage/` mirrors the same pattern: `StorageService` ABC, `LocalStorageService` impl, `get_storage_service()` factory keyed on `STORAGE_BACKEND`. Blobs live outside the code tree (`STORAGE_LOCAL_PATH`, a named Docker volume). Uploads use opaque keys `resumes/{user_id}/{uuid}.pdf`; the client filename is metadata only. Swapping to S3/R2 should touch this package only.
@@ -130,6 +139,7 @@ A missing worker flips `/health` `status` to `degraded`, unlike an AI or queue f
 
 - **Unit tests with fakes** — `test_evaluator.py`, `test_question_generator.py`, `test_interview_flow.py`, `test_report_service.py`, `test_resume_service.py`, `test_storage.py`, `test_rate_limit.py`, `test_degradation.py`. No network, no database.
 - **API tests against a real Postgres** — `tests/api/`. The `api` fixture builds the schema by running the **actual migrations**, wraps each test in a transaction that is rolled back (`join_transaction_mode="create_savepoint"`, so the app's own `commit()` still works), and forces `GEMINI_API_KEY=None` plus rate limiting off. They **skip** when Postgres is unreachable; `REQUIRE_TEST_DATABASE=1` makes that a failure instead, which is what CI sets.
+- **Integration tests against a real Redis** — `tests/api/test_queue_integration.py`, `tests/api/test_rate_limit_redis.py`, via the `redis_pool` fixture (db 15, flushed). Same bargain as Postgres: skip when unreachable, `REQUIRE_TEST_REDIS=1` in CI turns that into a failure.
 - **Script-style probes** — `test_gemini_integration.py`, `test_rag_pipeline.py`. They print rather than assert and self-skip without a key.
 
 Prefer an API test for anything touching ownership: the service fakes implement `get_owned` themselves, so they prove the service *calls* it, not that the SQL filters by user.
