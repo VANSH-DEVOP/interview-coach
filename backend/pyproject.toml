@@ -54,6 +54,7 @@ dev = [
     # (local ruff 0.15 vs CI 0.16, which promoted import sorting to a default).
     "ruff==0.16.2",
     "mypy==2.1.0",
+    "pytest-cov>=5.0",
 ]
 
 [build-system]
@@ -76,3 +77,41 @@ select = ["E4", "E7", "E9", "F", "I"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+# Coverage is opt-in: `--cov` is deliberately NOT in addopts. Running one test
+# file is the commonest thing a developer does, and measuring the whole
+# application from it would report 8% and fail the threshold below every time.
+# CI passes the flag explicitly; locally, `pytest --cov=app` reproduces it.
+
+[tool.coverage.run]
+source = ["app"]
+# Branch coverage as well as line. Measured before switching it on: it moves
+# the total from 92% to 91%, which is close to free, and it is the more
+# meaningful number in a codebase whose defining feature is that every AI path
+# has an `except` that silently swaps in a fallback. A fallback branch nothing
+# ever takes is exactly what this project has shipped before.
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+# The threshold is a ratchet against regression, not a target. Measured 91% at
+# the time of writing, so this leaves roughly one point -- about 37 statements
+# -- of slack, which exists for environment drift rather than for new untested
+# code: CI runs Python 3.12 and developers here run 3.13, and coverage of
+# version-conditional code differs between them.
+#
+# Raise it when the measured number rises. Never lower it to make a build pass:
+# that converts the one signal this gives into a record of what was tolerated.
+fail_under = 90
+exclude_lines = [
+    "pragma: no cover",
+    # Never executed at runtime; exists for the type checker.
+    "if TYPE_CHECKING:",
+    # Bodies of abstract methods and Protocols -- there is nothing to cover.
+    "^\\s*\\.\\.\\.$",
+    "raise NotImplementedError",
+    "@(abc\\.)?abstractmethod",
+    # Script entry points; the suite imports these modules, it does not run them
+    # as programs.
+    "if __name__ == .__main__.:",
+]

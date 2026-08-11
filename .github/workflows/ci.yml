@@ -107,7 +107,12 @@ jobs:
         env:
           REQUIRE_TEST_DATABASE: "1"
           REQUIRE_TEST_REDIS: "1"
-        run: pytest -q --no-header -rs
+        # --cov is passed here rather than living in addopts: running a single
+        # test file is the commonest local action, and measuring the whole
+        # application from one file would report ~8% and fail the threshold
+        # every time. The threshold itself is in pyproject.toml, so
+        # `pytest --cov=app` locally is the same check this runs.
+        run: pytest -q --no-header -rs --cov=app
 
   frontend:
     name: Frontend
@@ -133,7 +138,10 @@ jobs:
         run: npm run typecheck
 
       - name: Tests
-        run: npm test
+        # Thresholds are in vitest.config.mts and are a floor against tests
+        # being deleted, not a claim that this is well covered -- see the
+        # comment there about why the honest number is 19% and not 86%.
+        run: npm run test:coverage
 
       - name: Build
         run: npm run build

@@ -291,7 +291,20 @@ The quota check runs **before** `storage.save`, not after the row is built — a
 
 Prefer an API test for anything touching ownership: the service fakes implement `get_owned` themselves, so they prove the service *calls* it, not that the SQL filters by user.
 
-Frontend: `npm test` (vitest + jsdom + React Testing Library). `tsc --noEmit` covers test files too. `npm run lint` is unconfigured (`next lint` prompts to set ESLint up) — CI runs typecheck, tests, and build instead.
+### Coverage
+
+Measured, thresholded, and **opt-in**: `--cov` is deliberately not in `addopts`, because running one test file is the commonest local action and measuring the whole application from it reports ~41% and would fail every time. CI passes the flag; `pytest --cov=app` locally is the identical check, threshold and all (`[tool.coverage.report]` in `pyproject.toml`).
+
+- **Backend: 91%, threshold 90.** Branch coverage is on — measured at 92% line / 91% branch, so it costs one point and is the more meaningful number in a codebase whose defining feature is an `except` on every AI path that silently swaps in a fallback. A fallback branch nothing ever takes is something this project has shipped before.
+- **Frontend: 19%, thresholds 15/12/15/15** (`vitest.config.mts`).
+
+**`coverage.all: true` on the frontend is load-bearing.** v8 reports only the files a test imported, and left at its default this project scored **86%** — that being 86% of the three files that have tests, with every page and component absent from the denominator. The honest figure is 19%. The flattering one is worse than nothing, because it would also *fall* the moment someone wrote the first test for a page, since that page would join the denominator mostly uncovered — a metric that punishes writing a test.
+
+The frontend numbers are a floor against tests being deleted, not a claim of health: the pages and UI components have no tests at all, and the fix is tests rather than a number in a config file.
+
+**Never lower a threshold to make a build pass** — that converts the one signal these give into a record of what was tolerated. Raise them when the measured value rises. The one point of slack on the backend is for environment drift (CI runs Python 3.12, local is 3.13), not for new untested code.
+
+Frontend: `npm test` (vitest + jsdom + React Testing Library), `npm run test:coverage` for the gated run. `tsc --noEmit` covers test files too. `npm run lint` is unconfigured (`next lint` prompts to set ESLint up) — CI runs typecheck, tests, and build instead.
 
 ## Frontend
 
