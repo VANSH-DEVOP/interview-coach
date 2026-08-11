@@ -1,0 +1,67 @@
+# Automated dependency update PRs.
+#
+# The audit steps in ci.yml are the alarm; this is the thing that answers it.
+# An alarm with nothing behind it eventually gets ignored -- which is how this
+# project acquired three high-severity npm findings that sat there long enough
+# to be described as "pre-existing" in the backlog.
+version: 2
+
+updates:
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the routine churn, so review effort goes on the updates that
+      # can actually break something rather than on five separate patch bumps.
+      # Majors are excluded here and arrive as their own PRs.
+      minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, backend]
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, frontend]
+    commit-message:
+      prefix: "chore(deps)"
+
+  # The workflows themselves. Actions are pinned by major tag (actions/checkout@v5),
+  # so nothing here moves without a PR -- including the ones that hold the
+  # credentials CI runs with.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels: [dependencies, ci]
+    commit-message:
+      prefix: "chore(ci)"
+
+  # The base images. A Python or Node base going unpatched is the same class of
+  # problem as a package going unpatched, and nothing else in this repository
+  # would notice.
+  - package-ecosystem: docker
+    directory: /backend
+    schedule:
+      interval: monthly
+    labels: [dependencies, docker]
+    commit-message:
+      prefix: "chore(docker)"
+
+  - package-ecosystem: docker
+    directory: /frontend
+    schedule:
+      interval: monthly
+    labels: [dependencies, docker]
+    commit-message:
+      prefix: "chore(docker)"

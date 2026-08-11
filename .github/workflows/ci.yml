@@ -79,6 +79,22 @@ jobs:
       - name: Create writable data directories
         run: mkdir -p "$STORAGE_LOCAL_PATH" "$CHROMA_PATH"
 
+      - name: Dependency audit
+        # Fails on any known advisory in what is actually installed, which is
+        # what ships in the image -- not on a lockfile nobody regenerates.
+        #
+        # PYSEC-2026-311 is ignored deliberately, with a reason and a condition
+        # that would end it. It is a pre-authentication RCE in the ChromaDB
+        # *server's* HTTP API (`/api/v2/.../collections`, via `trust_remote_code`).
+        # This project embeds chromadb in-process through PersistentClient and
+        # EphemeralClient and exposes no Chroma HTTP surface at all, so the
+        # vulnerable endpoint does not exist here. There is no fixed version to
+        # move to, so the alternatives were this or a permanently red build.
+        #
+        # REMOVE THIS IGNORE if app/services/ai/vector_store.py ever switches to
+        # chromadb.HttpClient, or if a fixed chromadb is released.
+        run: pip-audit --progress-spinner off --ignore-vuln PYSEC-2026-311
+
       - name: Ruff
         run: ruff check .
 
@@ -133,6 +149,13 @@ jobs:
 
       - name: Install
         run: npm ci
+
+      - name: Dependency audit
+        # The whole tree, dev dependencies included: a compromised build tool
+        # reaches production just as surely as a compromised runtime one. Gating
+        # at `high` while the tree is clean -- loosening a threshold later is
+        # easy, tightening one never happens.
+        run: npm audit --audit-level=high
 
       - name: Typecheck
         run: npm run typecheck

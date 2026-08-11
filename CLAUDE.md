@@ -302,6 +302,18 @@ Measured, thresholded, and **opt-in**: `--cov` is deliberately not in `addopts`,
 
 The frontend numbers are a floor against tests being deleted, not a claim of health: the pages and UI components have no tests at all, and the fix is tests rather than a number in a config file.
 
+### Dependency scanning
+
+`pip-audit` (backend) and `npm audit --audit-level=high` (frontend) gate CI, with `.github/dependabot.yml` raising the update PRs that answer them. An alarm with nothing behind it gets ignored — which is how three high-severity npm findings sat here long enough to be called "pre-existing".
+
+**Audits run against what is installed, not a lockfile**, because that is what ships in the image.
+
+One ignore exists, and it is the pattern to follow if another is ever needed — a reason, a reachability argument, and the condition that ends it:
+
+- **`PYSEC-2026-311` (chromadb), ignored.** Pre-auth RCE in the ChromaDB *server's* HTTP API via `trust_remote_code` on `/api/v2/.../collections`. This project embeds chromadb in-process (`PersistentClient`/`EphemeralClient`) and exposes no Chroma HTTP surface, so the vulnerable endpoint does not exist here. There is no fixed version, so the choice was this or a permanently red build. **Remove the ignore if `vector_store.py` ever moves to `chromadb.HttpClient`.**
+
+Reachability is the thing to judge, and it cuts both ways — the same audit found **pypdf** advisories (a crafted PDF causing memory exhaustion *during text extraction*) which are directly reachable, since `ResumeParser.parse` runs that path on a file any registered user can upload. Those were upgraded, not argued away.
+
 **Never lower a threshold to make a build pass** — that converts the one signal these give into a record of what was tolerated. Raise them when the measured value rises. The one point of slack on the backend is for environment drift (CI runs Python 3.12, local is 3.13), not for new untested code.
 
 Frontend: `npm test` (vitest + jsdom + React Testing Library), `npm run test:coverage` for the gated run. `tsc --noEmit` covers test files too. `npm run lint` is unconfigured (`next lint` prompts to set ESLint up) — CI runs typecheck, tests, and build instead.
