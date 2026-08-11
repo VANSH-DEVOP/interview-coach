@@ -138,6 +138,7 @@ Scaffolding exists; the feature does not.
   **The real work was JSON, not selection.** Anthropic has no JSON mode, and every caller above the transport expects parsed JSON, so `extract_json` handles fenced and prose-wrapped replies with a string-aware bracket scan. It does not *repair* malformed JSON — guessing could silently change a score.
   Verified by driving the real `ModelClient` at a local OpenAI-compatible server: reply parsed, **redaction held across the swap**, token telemetry still recorded.
   The transport was renamed `ModelClient`/`ModelError` first, in its own commit.
+  `AI_JSON_MODE=false` is the escape hatch for endpoints that reject `response_format` — added after noticing the first version sent it unconditionally with no way to turn it off, which would have made an older Ollama fail every call with no config-level fix.
   **Embeddings stay on Gemini** — Chroma collections are fixed-dimension, so swapping raises rather than degrades. The fix (collection name keyed on the embedding model, plus a re-index) is written up in `config.py` as the natural follow-up.
 - [ ] **Voice interviews** (speech-to-text answers) — would give `duration_seconds` a real purpose.
 

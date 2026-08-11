@@ -163,6 +163,71 @@ def test_gemini_is_built_with_json_mode_and_our_retry_count() -> None:
     assert model.model.endswith("gemini-flash-latest")
 
 
+# -- The JSON-mode escape hatch --------------------------------------------------
+
+
+def test_gemini_asks_for_json_mode_by_default() -> None:
+    model = build_chat_model(
+        provider="gemini", model="m", api_key="k", timeout=1.0, max_retries=1
+    )
+
+    assert model.response_mime_type == "application/json"
+
+
+def test_json_mode_can_be_turned_off_for_gemini() -> None:
+    model = build_chat_model(
+        provider="gemini",
+        model="m",
+        api_key="k",
+        timeout=1.0,
+        max_retries=1,
+        json_mode=False,
+    )
+
+    assert model.response_mime_type is None
+
+
+def test_openai_sends_response_format_by_default() -> None:
+    pytest.importorskip("langchain_openai")
+
+    model = build_chat_model(
+        provider="openai", model="m", api_key="k", timeout=1.0, max_retries=1
+    )
+
+    assert model.model_kwargs == {"response_format": {"type": "json_object"}}
+
+
+def test_json_mode_off_sends_no_response_format() -> None:
+    """The reason this setting exists. An older Ollama build, or another shim
+    behind AI_BASE_URL, answers 400 to the unknown field -- and because
+    ModelError is what the fallback layer catches, the symptom is not an error
+    page but every interview quietly going generic."""
+    pytest.importorskip("langchain_openai")
+
+    model = build_chat_model(
+        provider="openai",
+        model="m",
+        api_key="k",
+        timeout=1.0,
+        max_retries=1,
+        json_mode=False,
+    )
+
+    assert model.model_kwargs == {}
+
+
+def test_turning_json_mode_off_does_not_break_parsing() -> None:
+    """What makes the escape hatch safe rather than catastrophic.
+
+    `extract_json` never depended on a JSON mode being set -- it was written for
+    Anthropic, which has none. So the replies that arrive with the mode off are
+    exactly the replies it already handles.
+    """
+    assert extract_json('```json\n{"score": 7}\n```') == {"score": 7}
+    assert extract_json('Sure:\n{"score": 7}') == {"score": 7}
+    assert extract_json('{"score": 7}') == {"score": 7}
+
+
 # -- The OpenAI-compatible path, end to end -------------------------------------
 
 
@@ -227,7 +292,13 @@ def fake_openai_server():
     server.shutdown()
 
 
-async def test_an_openai_compatible_provider_works_end_to_end(fake_openai_server):
+@pytest.mark.parametrize("json_mode", [True, False])
+async def test_an_openai_compatible_provider_works_end_to_end(
+    fake_openai_server, json_mode
+):
+    """Run both ways, because AI_JSON_MODE has to change what goes over the
+    wire *and* leave the reply parseable. Off is the configuration an older
+    Ollama needs; on is everything else."""
     pytest.importorskip(
         "langchain_openai", reason='needs the optional extra: pip install -e ".[openai]"'
     )
@@ -243,6 +314,7 @@ async def test_an_openai_compatible_provider_works_end_to_end(fake_openai_server
         "fake-model",
         provider="openai",
         base_url=base_url,
+        json_mode=json_mode,
         redactor=redactor_for("Priya Raman"),
     )
 
@@ -251,8 +323,14 @@ async def test_an_openai_compatible_provider_works_end_to_end(fake_openai_server
         prompt="Priya Raman, priya@example.com -- ask about Kafka.",
     )
 
-    # Parsed out of a fenced reply with prose around it.
+    # Parsed out of a fenced reply with prose around it -- with the mode on or
+    # off, because extract_json never depended on it.
     assert result == {"questions": ["Tell me about Kafka"], "n": 1}
+
+    # And the flag reaches the wire. This is the assertion the escape hatch is
+    # for: an endpoint that 400s on an unknown `response_format` needs it gone
+    # from the request, not merely ignored by us.
+    assert ("response_format" in received) is json_mode
 
     # Redaction is at the transport, so it must survive a provider swap. This
     # is the assertion that would catch a new provider branch that forgot it.

@@ -134,6 +134,20 @@ class Settings(BaseSettings):
     #   Groq    https://api.groq.com/openai/v1
     #   Ollama  http://localhost:11434/v1
     AI_BASE_URL: str | None = None
+    # Whether to ask the provider for structured output.
+    #
+    # On by default, and it is a *request* rather than a requirement: replies
+    # are put through `providers.extract_json`, which copes with fenced and
+    # prose-wrapped JSON because Anthropic has no JSON mode at all. That is what
+    # makes turning this off safe instead of catastrophic.
+    #
+    # Turn it off when an OpenAI-compatible endpoint behind AI_BASE_URL rejects
+    # the `response_format` field -- older Ollama builds and some shims answer
+    # 400 to an unknown parameter, and because ModelError is exactly what the
+    # fallback layer catches, the symptom is not an error page but every
+    # interview quietly going generic. Check /health's `ai.calls.failure_rate`
+    # if that is the shape of what you are seeing.
+    AI_JSON_MODE: bool = True
 
     @property
     def ai_api_key(self) -> str | None:

@@ -94,7 +94,10 @@ jobs:
           # test needs, and that test covers the path Groq, Ollama, OpenRouter
           # and vLLM all take. Without it that test skips and the second
           # provider is never exercised.
-          pip install -e ".[dev,openai]"
+          # Both provider extras: mypy cannot check a branch whose package is
+          # absent, and the Anthropic branch shipped with a type error found
+          # only because the package happened to be installed locally.
+          pip install -e ".[dev,anthropic,openai]"
 
       - name: Create writable data directories
         run: mkdir -p "$STORAGE_LOCAL_PATH" "$CHROMA_PATH"

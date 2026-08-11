@@ -356,6 +356,7 @@ def get_evaluator(redactor: "Redactor | None" = None) -> Evaluator:
             settings.ai_model,
             provider=settings.AI_PROVIDER,
             base_url=settings.AI_BASE_URL,
+            json_mode=settings.AI_JSON_MODE,
             redactor=redactor,
         )
         return FallbackEvaluator(GeminiEvaluator(client), HeuristicEvaluator())

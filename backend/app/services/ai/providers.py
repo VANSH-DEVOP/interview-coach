@@ -63,6 +63,7 @@ def build_chat_model(
     timeout: float,
     max_retries: int,
     base_url: str | None = None,
+    json_mode: bool = True,
 ) -> Any:
     """Construct the LangChain chat model for `provider`.
 
@@ -70,6 +71,12 @@ def build_chat_model(
     integration here ships a different default (six, two, two), and the reason
     this project wants one is the same for all of them -- there are already two
     retry layers above, and the free tier is twenty requests a day.
+
+    `json_mode` asks the provider for structured output where it has such a
+    thing. It is a request, not a requirement: `extract_json` handles replies
+    from providers that have no JSON mode at all, which is what makes turning
+    this off safe rather than catastrophic. Anthropic ignores it entirely --
+    there is nothing to ask for.
     """
     try:
         match provider:
@@ -81,17 +88,26 @@ def build_chat_model(
                     api_key=api_key,
                     request_timeout=timeout,
                     max_retries=max_retries,
-                    response_mime_type="application/json",
+                    response_mime_type=(
+                        "application/json" if json_mode else None
+                    ),
                 )
 
             case "anthropic":
                 from langchain_anthropic import ChatAnthropic
+                from pydantic import SecretStr
 
-                # No JSON mode to ask for. The prompt requests JSON and
-                # `extract_json` handles what comes back.
+                # No JSON mode to ask for, so `json_mode` is deliberately
+                # ignored here. The prompt requests JSON and `extract_json`
+                # handles what comes back -- which is why this provider works
+                # at all, and why turning JSON mode off elsewhere is safe.
+                #
+                # `max_tokens` resolves to 4096, a hard ceiling where Gemini and
+                # OpenAI are effectively unbounded. Comfortable for five
+                # questions or one evaluation; worth knowing it exists.
                 return ChatAnthropic(
                     model_name=model,
-                    api_key=api_key,
+                    api_key=SecretStr(api_key),
                     timeout=timeout,
                     max_retries=max_retries,
                     stop=None,
@@ -110,12 +126,18 @@ def build_chat_model(
                     base_url=base_url,
                     timeout=timeout,
                     max_retries=max_retries,
-                    # Only genuine OpenAI reliably honours this; Groq accepts
-                    # it, Ollama's shim ignores it. Sent regardless because
-                    # `extract_json` covers the ones that ignore it, and
-                    # omitting it would give up the guarantee on the one that
-                    # does not.
-                    model_kwargs={"response_format": {"type": "json_object"}},
+                    # Genuine OpenAI honours this, Groq accepts it, recent
+                    # Ollama accepts it -- but an older shim behind AI_BASE_URL
+                    # can reject the unknown field outright, which turns every
+                    # call into a 400 and silently hands the interview to the
+                    # deterministic fallback. AI_JSON_MODE=false is the way out,
+                    # and it is safe because `extract_json` never depended on
+                    # this being set.
+                    model_kwargs=(
+                        {"response_format": {"type": "json_object"}}
+                        if json_mode
+                        else {}
+                    ),
                 )
 
             case _:

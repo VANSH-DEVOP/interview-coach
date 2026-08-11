@@ -64,6 +64,7 @@ class ModelClient:
         *,
         provider: Provider = "gemini",
         base_url: str | None = None,
+        json_mode: bool = True,
         timeout: float = 30.0,
         redactor: Redactor | None = None,
     ) -> None:
@@ -71,6 +72,7 @@ class ModelClient:
         self._model = model
         self._provider: Provider = provider
         self._base_url = base_url
+        self._json_mode = json_mode
         self._timeout = timeout
         # Defaulting to the pattern-only redactor rather than to None means a
         # caller that does not know whose data this is still cannot send an
@@ -94,6 +96,7 @@ class ModelClient:
                 timeout=self._timeout,
                 max_retries=_MAX_ATTEMPTS,
                 base_url=self._base_url,
+                json_mode=self._json_mode,
             )
         return self._chat
 

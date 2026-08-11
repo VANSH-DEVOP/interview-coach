@@ -203,6 +203,7 @@ def get_question_generator(
             settings.ai_model,
             provider=settings.AI_PROVIDER,
             base_url=settings.AI_BASE_URL,
+            json_mode=settings.AI_JSON_MODE,
             redactor=redactor,
         )
         return FallbackQuestionGenerator(
