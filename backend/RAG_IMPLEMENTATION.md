@@ -20,8 +20,10 @@ This ensures questions are **personalized** to the candidate's actual experience
 > chunk, no caching, no relevance threshold. `goals.md` holds a six-part plan
 > to take it further. **Parts 1 (observability + benchmark), 2 (chunks as rows
 > + structure-aware chunking), 3 (hybrid retrieval), 4 (embedding cache) and
-> 5 (query rewriting + prompt-injection defence) have landed**; see
-> below. What is still missing: multi-step orchestration (part 6).
+> 5 (query rewriting + prompt-injection defence) and 6 (multi-step
+> generation) have landed**; see
+> below. **All six parts are complete.** The open item is the LangChain
+> provider layer and LangSmith tracing; see `goals.md`.
 
 ## Observability
 
@@ -166,6 +168,24 @@ Phrase matching is deliberately **not** used — blocklists on natural language
 fail against paraphrase and mangle legitimate text. And fencing is not a
 guarantee: the controls that bound the damage are the 0–10 score clamp, the
 JSON shape validation, and the fact that evaluation output is never executed.
+
+## Question generation chain
+
+`initial_questions` runs extract → generate → critique → refine. Only
+`generate` always costs a provider call; at twenty requests per day for the
+account, a model call per step would take the deployment from roughly six
+interviews a day to two.
+
+| Step | Cost | What it does |
+|---|---|---|
+| extract | free | Reads the resume's own `SKILLS`/`CERTIFICATIONS` block (labelled by the chunker) for the technologies to probe |
+| generate | 1 call | The existing call, now naming those technologies |
+| critique | free | Count, duplicates, requested type mix, whether any question touches a stated skill |
+| refine | 1 call, conditional | Fixes exactly what the critique named; never retried, kept only if it has fewer problems |
+
+Nothing enforced `question_count` before this, so a model returning three
+questions when five were requested produced a three-question interview
+silently. Extras are trimmed for free; a short set triggers the refinement.
 
 ## Architecture
 

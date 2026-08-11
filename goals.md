@@ -247,9 +247,8 @@ Stale-report reconciliation closed 2026-08-09. Token pruning, worker liveness
 and shared rate-limit counters closed 2026-08-10; the frontend's
 every-error-is-a-logout problem closed the same day. All are described below.
 
-1. **LangChain provider layer + LangSmith tracing** — next session, planned
-   2026-08-11. See "NEXT SESSION" below. RAG parts 1-5 are done; part 6
-   (orchestration) waits behind it.
+1. **LangChain provider layer + LangSmith tracing** — see "NEXT SESSION"
+   below. **All six RAG parts are now done**, so this is the next item.
 2. **Observability** — AI-call telemetry (latency, token spend, fallback rate)
    is the cheapest real win; the counters exist and `/health` already has the
    shape for it. Error reporting is what the worker's missing restart alarm
@@ -391,10 +390,10 @@ than dropping the resume.
 - [x] **Part 4 — Caching in Redis.** Done; see below. Question-set caching
   deliberately dropped, with reasons.
 - [x] **Part 5 — Query rewriting + prompt-injection defence.** Done; see below.
-- [ ] **Part 6 — Multi-step orchestration.** Extract skills → generate →
-  critique/refine. **Deferred behind the LangChain/LangSmith work below**
-  (decided 2026-08-10), since the orchestration should be written against
-  whatever the provider layer ends up being rather than rewritten after it.
+- [x] **Part 6 — Multi-step orchestration.** Done 2026-08-11; see below. Built
+  before the LangChain work after all: extraction and critique are pure Python
+  and refinement goes through the existing `generate_json` seam, so a provider
+  swap underneath rewrites none of it. Yesterday's deferral was over-cautious.
 
 ### Part 1 — retrieval observability + benchmark ✅ COMPLETE (2026-08-10)
 Retrieval is the AI path that fails *quietly and usefully*: when it is off,
@@ -643,6 +642,38 @@ Two things stated rather than assumed:
   tests cover prompt *construction*, which is what can be checked without a
   provider; whether a given model honours a fence is a question about the model
   and belongs in a live-key probe.
+
+### Part 6 — extract → generate → critique → refine ✅ COMPLETE (2026-08-11)
+`app/services/ai/pipeline.py`. **Only the generate step always costs a provider
+call.** That is the design, not an optimisation: at twenty requests per day for
+the whole account, a model call per step would take the deployment from roughly
+six interviews a day to two.
+
+- **extract** — reads the resume's own SKILLS/CERTIFICATIONS block, which part
+  2's chunker already labels, so this costs nothing and cannot hallucinate a
+  technology the candidate never claimed. Prose sections are deliberately not
+  mined: comma-splitting a sentence produces fragments that read like skills
+  and are not, and a question about something never claimed is worse than one
+  question fewer.
+- **critique** — deterministic only: count, duplicates, requested type mix, and
+  whether any question touches a stated skill. It does not judge whether a
+  question is *good*, because that needs a model and a call per interview to
+  grade the interview is exactly the trade being avoided.
+- **refine** — one corrective call, only when the critique has something to
+  say, never retried, re-critiqued and kept only if it has *fewer* problems. A
+  failed refinement returns the original set rather than raising, since raising
+  would let the factory fall back to the static generator and trade a merely
+  imperfect interview for a generic one.
+
+**It closed a real defect.** Nothing enforced `question_count`: a model
+returning three questions when five were asked for produced a three-question
+interview, silently. Extras are now trimmed for free; a short set is what
+triggers the one refinement call.
+
+The LangGraph question that was deferred to this part answers itself now the
+shape is visible — extract and critique are ordinary Python and refine is one
+`if`, so there is no graph to express. Revisit only if the chain gains real
+branching, checkpointing, or a human-in-the-loop pause.
 
 ## NEXT SESSION — LangChain (provider layer) + LangSmith (2026-08-11)
 Decided 2026-08-10. Supersedes the "hand-rolled, revisit at part 6" decision
