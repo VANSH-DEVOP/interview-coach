@@ -36,8 +36,17 @@ def test_the_env_files_are_the_repo_root_and_the_backend_directory() -> None:
 def test_the_backend_file_wins_where_the_two_disagree(tmp_path, monkeypatch) -> None:
     """Ordered least- to most-specific, which is what lets a repository-root
     `.env` hold the shared settings while `backend/.env` overrides only what
-    genuinely differs between a container and a host process -- in practice
-    POSTGRES_PORT, since a host reaches the database on the published port."""
+    genuinely differs between a container and a host process.
+
+    The `delenv` calls are the point of this docstring. A real environment
+    variable outranks *both* files -- correctly, and that is how CI points the
+    suite at its service containers -- so without clearing them this asserts
+    whatever the machine happens to export and passes on a laptop while failing
+    in CI. Which is exactly what it did.
+    """
+    monkeypatch.delenv("POSTGRES_PORT", raising=False)
+    monkeypatch.delenv("POSTGRES_DB", raising=False)
+
     root = tmp_path / ".env"
     backend = tmp_path / "backend" / ".env"
     backend.parent.mkdir()
@@ -54,11 +63,13 @@ def test_the_backend_file_wins_where_the_two_disagree(tmp_path, monkeypatch) -> 
     assert settings.POSTGRES_DB == "shared"
 
 
-def test_a_missing_env_file_is_not_an_error(tmp_path) -> None:
+def test_a_missing_env_file_is_not_an_error(tmp_path, monkeypatch) -> None:
     """The Docker image copies only the backend directory, so the
     repository-root path does not exist inside a container. Containers are
     configured from the environment, and a missing file must be ignored rather
     than fatal."""
+
+    monkeypatch.delenv("POSTGRES_USER", raising=False)
 
     class Scoped(Settings):
         model_config = {**Settings.model_config, "env_file": (tmp_path / "nope.env",)}
