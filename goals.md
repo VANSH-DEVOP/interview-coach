@@ -719,6 +719,77 @@ requests. `max_retries=1` restores it: 78s → 0.89s, and the suite back to 107s
 
 The retriever was left alone, as planned. That remains a separate decision.
 
+## NEXT SESSION — the retrieval layer on LangChain (decide, then do)
+Raised 2026-08-11 and deliberately left whole rather than started at the end of
+a session. **Read the finding below before planning: the "easy half" of this is
+not easy, and the reason is structural rather than incidental.**
+
+### What was investigated and what it costs
+`langchain-chroma` is a single package. `EnsembleRetriever` is not — it lives
+in `langchain` proper, which is not installed, and pulling it in brings
+**langgraph, langgraph-checkpoint, langgraph-prebuilt, langgraph-sdk** and
+three more. So the framework part 6 concluded had no graph to express would
+arrive as a transitive dependency, in order to replace `fuse()`: forty lines
+with tests.
+
+### The finding that changes the shape of this work
+**`Chroma.add_texts` cannot take precomputed embeddings.** Read the source: it
+obtains them only via `self._embedding_function.embed_documents(texts)`. Our
+vectors do not come from an embedding function bound to the store — they come
+from `EmbeddingService`, which redacts **per user** (`redactor_for(user.full_name)`)
+and caches on the redacted text.
+
+That leaves three ways through, and two are bad:
+
+1. **Bind an adapter at construction.** `RAGService` is process-cached, so the
+   adapter would carry the default pattern-only redactor and the candidate's
+   own *name* would stop being redacted at the embedding boundary. A security
+   regression; `tests/test_masking_boundary.py` catches it.
+2. **Mutable "current redactor" on the adapter.** Unsafe under concurrency.
+   Not an option.
+3. **A per-call `Chroma(client=<shared>, embedding_function=RedactingEmbeddings(service, redactor))`.**
+   This works. It costs a wrapper construction per call and an adapter class,
+   and it moves reads onto
+   `similarity_search_by_vector_with_relevance_scores`, which returns
+   *relevance scores* (higher is better) where everything here is written in
+   *cosine distance* (lower is better).
+
+That last conversion is the thing to be careful about: `RAG_MAX_DISTANCE` is a
+strict `<` in distance space, and inverting it silently keeps exactly the
+chunks the cutoff exists to drop. It fails quietly, which is the failure mode
+this pipeline has been bitten by repeatedly.
+
+### What must survive, each found by measurement rather than review
+- **The strict `<` distance cutoff.** 1.0 is exactly orthogonal; `<=` keeps
+  what it should drop.
+- **Deterministic tie-breaking in `fuse()`**, added because dict iteration
+  order deciding the prompt makes retrieval unreproducible.
+- **`hnsw:search_ef=200`**, and the per-test `collection_name` that fixed a
+  cross-test dimension collision which only appeared in the full suite.
+- **The shared `retrieval_text()`.** Fusion matches candidates by chunk text;
+  if the two halves format differently, nothing is ever recognised as found by
+  both and the only symptom is `agreed` stuck at zero.
+- **`retrieval_metrics`.** `hit`/`empty`/`failed`, `best_distance`, and
+  `dense_only`/`sparse_only`/`agreed` do not survive inside
+  `EnsembleRetriever`; they would have to move to callbacks or be lost.
+- **The benchmark baselines** (lexical 1.00/1.00, semantic 0.50/0.33,
+  follow-up rewritten 1.00/1.00). Re-baseline only with the reason recorded,
+  and remember part 3: measurements without the distance cutoff are not
+  reproducible.
+
+### Recommendation to weigh at the start of the session
+The provider layer was worth moving because the ecosystem absorbs churn there
+and the local knowledge was thin. Retrieval is the opposite on both counts:
+nothing upstream breaks it, and the list above is what it knows. The honest
+options are (a) skip it and keep the hand-rolled retriever, (b) take
+`langchain-chroma` only, via the per-call wrapper, and keep `fuse()` and the
+metrics, or (c) the full migration including `EnsembleRetriever` and langgraph.
+
+If (c), do it in this order and stay green at each step: vector store →
+verify masking boundary and cutoff direction → retriever → re-run the
+benchmark → rewire metrics. Do not start it late in a session; a half-migrated
+retriever is worse than either end state.
+
 ## Superseded plan — LangChain (provider layer) + LangSmith (2026-08-11)
 Decided 2026-08-10. Supersedes the "hand-rolled, revisit at part 6" decision
 for the **provider layer only**. Retrieval, chunking and metrics stay ours.
