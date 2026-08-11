@@ -194,9 +194,9 @@ def get_question_generator(
     settings = get_settings()
     if settings.GEMINI_API_KEY:
         from app.services.ai.gemini import GeminiQuestionGenerator
-        from app.services.ai.gemini_client import GeminiClient
+        from app.services.ai.model_client import ModelClient
 
-        client = GeminiClient(
+        client = ModelClient(
             settings.GEMINI_API_KEY, settings.GEMINI_MODEL, redactor=redactor
         )
         return FallbackQuestionGenerator(

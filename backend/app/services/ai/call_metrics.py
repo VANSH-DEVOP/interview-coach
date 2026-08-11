@@ -9,7 +9,7 @@ This module is the denominator, plus the two numbers you want once the rate
 looks wrong -- **latency** and **token spend**.
 
 **Recorded at the transport, not at the call sites.** The same reasoning that
-put redaction in `GeminiClient` and `EmbeddingService`: measured here, a new
+put redaction in `ModelClient` and `EmbeddingService`: measured here, a new
 call site cannot forget to be measured, because it never has to remember. It
 also means the latency recorded is the provider's, not ours -- the chunking,
 fusion and prompt assembly around it are somebody else's numbers.
@@ -175,7 +175,7 @@ def measure(operation: Operation, model: str) -> Iterator[_Call]:
 
     Re-raises whatever the block raised. Recording a failure must not change
     what the caller sees: everything above here is written against
-    `GeminiError` / `EmbeddingError`, and the fallback layer keys on them.
+    `ModelError` / `EmbeddingError`, and the fallback layer keys on them.
     """
     call = _Call()
     started = time.perf_counter()

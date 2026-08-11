@@ -3,7 +3,7 @@
 import asyncio
 
 from app.services.ai.evaluator import QAPair
-from app.services.ai.gemini_client import GeminiClient, GeminiError
+from app.services.ai.model_client import ModelClient, ModelError
 
 
 async def test_gemini_question_generation():
@@ -20,7 +20,7 @@ async def test_gemini_question_generation():
         return
     
     # Initialize Gemini client
-    client = GeminiClient(settings.GEMINI_API_KEY, settings.GEMINI_MODEL)
+    client = ModelClient(settings.GEMINI_API_KEY, settings.GEMINI_MODEL)
     
     # Test with sample resume
     sample_resume = """
@@ -82,7 +82,7 @@ async def test_gemini_question_generation():
             else:
                 print("ℹ️  No follow-up needed for this answer.")
     
-    except GeminiError as e:
+    except ModelError as e:
         print(f"❌ Gemini error: {e}")
         print("   Check your API key and rate limits")
 
@@ -99,7 +99,7 @@ async def test_gemini_evaluation():
         return
     
     # Initialize Gemini client and evaluator
-    client = GeminiClient(settings.GEMINI_API_KEY, settings.GEMINI_MODEL)
+    client = ModelClient(settings.GEMINI_API_KEY, settings.GEMINI_MODEL)
     from app.services.ai.evaluator import GeminiEvaluator
     evaluator = GeminiEvaluator(client)
     
@@ -167,7 +167,7 @@ async def test_gemini_evaluation():
                 if isinstance(feedback, dict):
                     print(f"     Q{i}: {feedback.get('feedback', 'N/A')}")
     
-    except GeminiError as e:
+    except ModelError as e:
         print(f"❌ Gemini error: {e}")
         print("   Check your API key and rate limits")
 

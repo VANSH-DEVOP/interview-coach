@@ -128,7 +128,7 @@ def test_calls_that_report_no_usage_leave_tokens_null_rather_than_zero() -> None
 
 def test_measure_records_a_failure_and_re_raises_it() -> None:
     """Recording must not change what the caller sees: everything above is
-    written against GeminiError/EmbeddingError and the fallback layer keys on
+    written against ModelError/EmbeddingError and the fallback layer keys on
     them."""
     with pytest.raises(RuntimeError, match="provider down"):
         with measure("generate", "m"):
@@ -173,9 +173,9 @@ def chat_transport(monkeypatch):
 
             return _Reply()
 
-    from app.services.ai import gemini_client as gemini_module
+    from app.services.ai import model_client as model_module
 
-    monkeypatch.setattr(gemini_module.GeminiClient, "_model_client", lambda self: _Chat())
+    monkeypatch.setattr(model_module.ModelClient, "_model_client", lambda self: _Chat())
 
 
 @pytest.fixture
@@ -195,9 +195,9 @@ def embed_transport(monkeypatch):
 
 
 async def test_a_generation_call_is_measured(chat_transport) -> None:
-    from app.services.ai.gemini_client import GeminiClient
+    from app.services.ai.model_client import ModelClient
 
-    await GeminiClient("k", "gemini-test").generate_json(
+    await ModelClient("k", "gemini-test").generate_json(
         system_instruction="Be rigorous.", prompt="hello"
     )
 
@@ -223,17 +223,17 @@ async def test_an_embedding_call_is_measured(embed_transport) -> None:
 
 
 async def test_a_dead_provider_is_counted_as_a_failed_call(monkeypatch) -> None:
-    from app.services.ai import gemini_client as gemini_module
-    from app.services.ai.gemini_client import GeminiClient, GeminiError
+    from app.services.ai import model_client as model_module
+    from app.services.ai.model_client import ModelClient, ModelError
 
     class _Dead:
         async def ainvoke(self, messages):
             raise RuntimeError("connection refused")
 
-    monkeypatch.setattr(gemini_module.GeminiClient, "_model_client", lambda self: _Dead())
+    monkeypatch.setattr(model_module.ModelClient, "_model_client", lambda self: _Dead())
 
-    with pytest.raises(GeminiError):
-        await GeminiClient("k", "m").generate_json(system_instruction="s", prompt="p")
+    with pytest.raises(ModelError):
+        await ModelClient("k", "m").generate_json(system_instruction="s", prompt="p")
 
     state = snapshot()
     assert state["failed"] == 1
@@ -250,8 +250,8 @@ async def test_a_reply_that_will_not_parse_is_still_a_successful_call(
     Collapsing the two would hide "provider up, output garbage" -- which is
     exactly the shape of a changed response schema.
     """
-    from app.services.ai import gemini_client as gemini_module
-    from app.services.ai.gemini_client import GeminiClient, GeminiError
+    from app.services.ai import model_client as model_module
+    from app.services.ai.model_client import ModelClient, ModelError
 
     class _Babbling:
         async def ainvoke(self, messages):
@@ -261,11 +261,11 @@ async def test_a_reply_that_will_not_parse_is_still_a_successful_call(
             return _Reply()
 
     monkeypatch.setattr(
-        gemini_module.GeminiClient, "_model_client", lambda self: _Babbling()
+        model_module.ModelClient, "_model_client", lambda self: _Babbling()
     )
 
-    with pytest.raises(GeminiError):
-        await GeminiClient("k", "m").generate_json(system_instruction="s", prompt="p")
+    with pytest.raises(ModelError):
+        await ModelClient("k", "m").generate_json(system_instruction="s", prompt="p")
 
     state = snapshot()
     assert state["calls"] == 1

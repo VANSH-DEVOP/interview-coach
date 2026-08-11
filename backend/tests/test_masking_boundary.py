@@ -18,10 +18,10 @@ import httpx
 import pytest
 
 from app.services.ai import embedding as embedding_module
-from app.services.ai import gemini_client as gemini_module
+from app.services.ai import model_client as model_module
 from app.services.ai.embedding import EmbeddingService
-from app.services.ai.gemini_client import GeminiClient
 from app.services.ai.masking import redactor_for
+from app.services.ai.model_client import ModelClient
 from app.services.ai.rag import RAGService, ResumeChunker
 
 RESUME = (
@@ -104,7 +104,7 @@ class _CapturingChatModel:
 def gemini_transport(monkeypatch: pytest.MonkeyPatch) -> _CapturingChatModel:
     chat = _CapturingChatModel()
     monkeypatch.setattr(
-        gemini_module.GeminiClient, "_model_client", lambda self: chat
+        model_module.ModelClient, "_model_client", lambda self: chat
     )
     return chat
 
@@ -142,7 +142,7 @@ def assert_no_identifiers(sent: str) -> None:
 
 
 async def test_prompt_reaches_the_provider_without_identifiers(gemini_transport) -> None:
-    client = GeminiClient("k", "m", redactor=redactor_for("Ada Lovelace"))
+    client = ModelClient("k", "m", redactor=redactor_for("Ada Lovelace"))
 
     await client.generate_json(system_instruction="Be rigorous.", prompt=RESUME)
 
@@ -153,7 +153,7 @@ async def test_prompt_keeps_the_content_the_interview_is_built_from(
     gemini_transport,
 ) -> None:
     """Redaction that also removes the employer would empty the product."""
-    client = GeminiClient("k", "m", redactor=redactor_for("Ada Lovelace"))
+    client = ModelClient("k", "m", redactor=redactor_for("Ada Lovelace"))
 
     await client.generate_json(system_instruction="Be rigorous.", prompt=RESUME)
 
@@ -166,7 +166,7 @@ async def test_a_client_given_no_redactor_still_redacts_patterns(
     gemini_transport,
 ) -> None:
     """The floor. Forgetting to plumb an identity must not disable redaction."""
-    client = GeminiClient("k", "m")
+    client = ModelClient("k", "m")
 
     await client.generate_json(system_instruction="Be rigorous.", prompt=RESUME)
 
@@ -181,7 +181,7 @@ async def test_a_client_given_no_redactor_still_redacts_patterns(
 async def test_system_instruction_is_sent_verbatim(gemini_transport) -> None:
     """It is a constant in this repository, never user data."""
     instruction = "Respond as JSON: {\"questions\": [{\"content\": str}]}."
-    client = GeminiClient("k", "m", redactor=redactor_for("Ada Lovelace"))
+    client = ModelClient("k", "m", redactor=redactor_for("Ada Lovelace"))
 
     await client.generate_json(system_instruction=instruction, prompt="Hello")
 
@@ -193,9 +193,9 @@ async def test_system_instruction_is_sent_verbatim(gemini_transport) -> None:
 async def test_redaction_is_logged_as_a_tally_never_as_values(
     gemini_transport, caplog
 ) -> None:
-    client = GeminiClient("k", "m", redactor=redactor_for("Ada Lovelace"))
+    client = ModelClient("k", "m", redactor=redactor_for("Ada Lovelace"))
 
-    with caplog.at_level("INFO", logger="app.services.ai.gemini_client"):
+    with caplog.at_level("INFO", logger="app.services.ai.model_client"):
         await client.generate_json(system_instruction="s", prompt=RESUME)
 
     logged = "\n".join(record.getMessage() for record in caplog.records)

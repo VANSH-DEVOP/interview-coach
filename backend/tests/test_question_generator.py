@@ -17,7 +17,7 @@ from app.services.ai.base import (
     StaticQuestionGenerator,
 )
 from app.services.ai.gemini import GeminiQuestionGenerator
-from app.services.ai.gemini_client import GeminiError
+from app.services.ai.model_client import ModelError
 
 
 class _FakeClient:
@@ -120,7 +120,7 @@ async def test_gemini_normalizes_invalid_type_to_behavioral():
 
 async def test_gemini_skips_empty_content_and_raises_when_all_empty():
     client = _FakeClient(payload={"questions": [{"content": "  ", "question_type": "technical"}]})
-    with pytest.raises(GeminiError):
+    with pytest.raises(ModelError):
         await GeminiQuestionGenerator(client).initial_questions(
             target_role=None, resume_text=None
         )

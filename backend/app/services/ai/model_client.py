@@ -3,7 +3,7 @@
 The transport is `ChatGoogleGenerativeAI`; everything around it is unchanged
 from the hand-written httpx version this replaces. That is the point of the
 shape: the seam callers use -- `generate_json(system_instruction=..., prompt=...)`
-returning parsed JSON and raising `GeminiError` -- is identical, so the
+returning parsed JSON and raising `ModelError` -- is identical, so the
 generator, the evaluator, the fallback layer and every test above this line
 neither changed nor noticed.
 
@@ -48,11 +48,11 @@ logger = logging.getLogger(__name__)
 _MAX_ATTEMPTS = 1
 
 
-class GeminiError(RuntimeError):
+class ModelError(RuntimeError):
     """Raised when the Gemini API cannot be reached or returns bad data."""
 
 
-class GeminiClient:
+class ModelClient:
     def __init__(
         self,
         api_key: str,
@@ -92,7 +92,7 @@ class GeminiClient:
             )
         return self._chat
 
-    @traced("gemini.generate_json", run_type="llm")
+    @traced("model.generate_json", run_type="llm")
     async def generate_json(self, *, system_instruction: str, prompt: str) -> Any:
         """Call the model in JSON mode and return the parsed payload.
 
@@ -123,16 +123,16 @@ class GeminiClient:
                 )
                 call.usage(reply)
         except Exception as exc:  # noqa: BLE001 - the integration raises its own
-            # Everything above this line is written against GeminiError, and
+            # Everything above this line is written against ModelError, and
             # the fallback layer keys on it. Letting a provider-specific
             # exception through would change what callers must handle every
             # time the integration is upgraded.
-            raise GeminiError(f"Gemini request failed: {exc}") from exc
+            raise ModelError(f"Gemini request failed: {exc}") from exc
 
         try:
             return json.loads(_text_of(reply))
         except (json.JSONDecodeError, ValueError, TypeError) as exc:
-            raise GeminiError(f"Unexpected Gemini response shape: {exc}") from exc
+            raise ModelError(f"Unexpected Gemini response shape: {exc}") from exc
 
 
 def _text_of(reply: Any) -> str:

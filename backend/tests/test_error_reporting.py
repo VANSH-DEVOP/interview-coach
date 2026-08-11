@@ -235,7 +235,7 @@ def test_a_crash_reports_the_stack_without_the_resume(captured_events) -> None:
     resume text that was sitting in it is not."""
 
     def generate_json():
-        # The real names from gemini_client, so this fails the way that would.
+        # The real names from model_client, so this fails the way that would.
         prompt = RESUME  # noqa: F841
         system_instruction = "Be rigorous."  # noqa: F841
         raise RuntimeError("provider down")

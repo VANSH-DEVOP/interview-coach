@@ -29,7 +29,7 @@ in the instructions the model is answering.
 
 Bypass is not possible by construction
 --------------------------------------
-The two egress points (`GeminiClient.generate_json` and
+The two egress points (`ModelClient.generate_json` and
 `EmbeddingService.embed_text`) redact their own input and default to
 `default_redactor()` when a caller passes nothing. A new call site cannot
 forget to redact; the most it can do is fail to supply the account holder's

@@ -2,7 +2,7 @@
 
 The transport is `langchain_chroma.Chroma`; the seam above it -- `add_resume`,
 `retrieve_relevant` returning a `RetrievalResult` of documents and **cosine
-distances**, `delete_resume` -- is unchanged, for the same reason `GeminiClient`
+distances**, `delete_resume` -- is unchanged, for the same reason `ModelClient`
 kept its seam when the provider call moved: everything above this line is
 written against it, including the distance cutoff in `RAGService`, rank fusion
 in `retrieval.py`, and the retrieval benchmark.

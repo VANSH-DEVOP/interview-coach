@@ -19,7 +19,7 @@ from app.services.ai.evaluator import (
 
 
 class _FakeClient:
-    """Stand-in for GeminiClient: returns or raises a preconfigured value."""
+    """Stand-in for ModelClient: returns or raises a preconfigured value."""
 
     def __init__(self, *, payload=None, error: Exception | None = None) -> None:
         self._payload = payload
@@ -312,7 +312,7 @@ async def test_fallback_recovers_when_primary_raises():
     assert result.detailed_feedback["per_question"]
 
 
-async def test_fallback_evaluator_recovers_from_gemini_client_error():
+async def test_fallback_evaluator_recovers_from_model_client_error():
     bad_client = _FakeClient(error=RuntimeError("network down"))
     evaluator = FallbackEvaluator(GeminiEvaluator(bad_client), HeuristicEvaluator())
     result = await evaluator.evaluate(

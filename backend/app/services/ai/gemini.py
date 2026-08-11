@@ -1,7 +1,7 @@
 """Gemini-backed question generation.
 
 Activated only when GEMINI_API_KEY is configured. On any API failure it raises
-GeminiError; the factory wraps this generator so the static generator can take
+ModelError; the factory wraps this generator so the static generator can take
 over, guaranteeing the interview flow always works.
 """
 
@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from app.services.ai import retrieval_metrics
 from app.services.ai.base import GeneratedQuestion, InterviewSpec, QuestionGenerator
-from app.services.ai.gemini_client import GeminiClient
+from app.services.ai.model_client import ModelClient
 from app.services.ai.pipeline import Critique, critique, extract_skills, trim_to_count
 from app.services.ai.query import rewrite_for_follow_up, rewrite_for_role
 from app.services.ai.tracing import traced
@@ -68,7 +68,7 @@ _SYSTEM = (
 class GeminiQuestionGenerator(QuestionGenerator):
     def __init__(
         self,
-        client: GeminiClient,
+        client: ModelClient,
         retriever: "Retriever | None" = None,
         redactor: "Redactor | None" = None,
     ) -> None:
@@ -182,9 +182,9 @@ class GeminiQuestionGenerator(QuestionGenerator):
         questions = self._parse_questions(payload, used_rag=used_rag)
         if not questions:
             # Treat an empty model result as a failure so the factory falls back.
-            from app.services.ai.gemini_client import GeminiError
+            from app.services.ai.model_client import ModelError
 
-            raise GeminiError("Gemini returned no usable questions.")
+            raise ModelError("Gemini returned no usable questions.")
 
         # Check what came back against what was asked for. Before this, a model
         # that returned three questions when five were requested produced a

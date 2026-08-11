@@ -2,7 +2,7 @@
 
 The second place text leaves for Google, and the one that is easy to forget:
 indexing a resume ships the whole document a chunk at a time. Redaction happens
-here for the same reason it happens in GeminiClient -- at the boundary, so no
+here for the same reason it happens in ModelClient -- at the boundary, so no
 call site can omit it.
 """
 
