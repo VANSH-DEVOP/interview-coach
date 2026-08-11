@@ -27,6 +27,7 @@ import json
 import logging
 from typing import Any
 
+from app.services.ai import call_metrics
 from app.services.ai.masking import Redactor, default_redactor
 from app.services.ai.tracing import traced
 
@@ -108,12 +109,19 @@ class GeminiClient:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         try:
-            reply = await self._model_client().ainvoke(
-                [
-                    SystemMessage(content=system_instruction),
-                    HumanMessage(content=redaction.text),
-                ]
-            )
+            # Only the round-trip is measured. A reply that arrives and then
+            # fails to parse below is a call that succeeded -- it took that
+            # long and cost those tokens -- and shows up as a *fallback*
+            # instead. Keeping the two apart is what makes "provider up,
+            # output garbage" distinguishable from "provider down".
+            with call_metrics.measure("generate", self._model) as call:
+                reply = await self._model_client().ainvoke(
+                    [
+                        SystemMessage(content=system_instruction),
+                        HumanMessage(content=redaction.text),
+                    ]
+                )
+                call.usage(reply)
         except Exception as exc:  # noqa: BLE001 - the integration raises its own
             # Everything above this line is written against GeminiError, and
             # the fallback layer keys on it. Letting a provider-specific

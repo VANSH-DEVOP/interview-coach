@@ -97,7 +97,10 @@ Scaffolding exists; the feature does not.
 - [x] ~~Tracing~~ ✅ 2026-08-11 — LangSmith, off by default, `app/services/ai/tracing.py`. Spans on `initial_questions`, `follow_up`, `retrieve_scored`, `evaluate` and the two provider calls. Records **shape, not content**, because a trace's payload is resume text; `LANGSMITH_TRACE_CONTENT=true` opts in.
 - [ ] **Metrics** — still nothing but request logging (`app/middleware/request_logging.py`) and the hand-rolled counters in `retrieval_metrics.py` / `degradation.py` / `rate_limit.py`, all readable only through `/health`. Nothing scrapes, aggregates or alerts on them.
 - [ ] Error reporting (Sentry or equivalent).
-- [ ] AI-call telemetry: latency, token spend, **fallback rate** — a non-zero fallback rate is the alert that would have caught the `gemini-1.5-flash` 404 on day one.
+- [x] ~~AI-call telemetry: latency, token spend, **fallback rate**~~ ✅ 2026-08-11 — `app/services/ai/call_metrics.py`, reported under `ai.calls` at `/health`, plus `attempts`/`fallback_rate` on the `ai` block itself.
+  The gap was not the counting, it was the **denominator**: `degradation.py` counted fallbacks and nothing counted attempts, so no rate could be computed and a raw count cannot be alerted on. `record_attempt()` at the fallback wrappers fixes that.
+  Two questions deliberately kept apart: `fallback_rate` is *user-visible degradation*, `calls.failure_rate` is *provider reachability*. A reply that arrives and fails to parse is a successful call and a fallback — collapsing them would hide "provider up, output garbage", which is what a changed response schema looks like.
+  Recorded at the transport, like redaction, so a new call site cannot forget. Embedding calls report no tokens (Google returns no usage), so token fields are null rather than zero.
 - [x] **Log level is too verbose.** Each AI call emits ~15 `httpcore` DEBUG lines (connect/TLS/request/response teardown) that bury the one line that matters. Pin third-party loggers (`httpcore`, `httpx`) to WARNING. → **Done** in `app/core/logging.py`.
 ### Config hygiene (P2)
 - [ ] **Postgres port is inconsistent** across docker-compose (**5434**), `.env.example` (**5433**), and the code default (**5432**).

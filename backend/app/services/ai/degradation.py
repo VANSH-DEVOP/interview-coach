@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class _State:
+    # Operations that reached a real provider implementation, whether or not it
+    # worked. Without this, `fallbacks` is a numerator with nothing under it:
+    # three fallbacks is a catastrophe against thirty attempts and a rounding
+    # error against three thousand.
+    attempts: int = 0
     fallbacks: int = 0
     last_operation: str | None = None
     last_error: str | None = None
@@ -32,6 +37,21 @@ class _State:
 
 
 _state = _State()
+
+
+def record_attempt(operation: str) -> None:
+    """Note that an AI operation was tried against the real provider.
+
+    Counted at the fallback wrappers rather than at the transport, because this
+    is the denominator for *operations that could degrade*, not for provider
+    round-trips -- one `initial_questions` may spend two calls (generate, then
+    a corrective refine) and is still one thing that either worked or came back
+    generic. Provider round-trips are counted in `call_metrics.py`.
+
+    When no API key is configured there is no wrapper and nothing is counted,
+    which is right: nothing was attempted, so there is no rate to report.
+    """
+    _state.attempts += 1
 
 
 def record_fallback(operation: str, error: BaseException) -> None:
@@ -58,7 +78,14 @@ def record_fallback(operation: str, error: BaseException) -> None:
 def snapshot() -> dict[str, object]:
     """Current degradation state, for the health endpoint."""
     return {
+        "attempts": _state.attempts,
         "fallbacks": _state.fallbacks,
+        # Null, not zero, when nothing has been attempted. Zero would read as
+        # "the provider is healthy" on a deployment that has no API key and has
+        # never called it.
+        "fallback_rate": (
+            round(_state.fallbacks / _state.attempts, 3) if _state.attempts else None
+        ),
         "last_operation": _state.last_operation,
         "last_error": _state.last_error,
         "last_at": _state.last_at,

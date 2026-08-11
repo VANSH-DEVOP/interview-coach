@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from app.services.ai import call_metrics
 from app.services.ai.masking import Redactor, default_redactor
 from app.services.ai.tracing import traced
 
@@ -108,7 +109,12 @@ class EmbeddingService:
         batch semantics below neither changed nor noticed.
         """
         try:
-            embedding = await self._model_client().aembed_query(redacted)
+            # No token counts: Google's embedding endpoint returns no usage, so
+            # these calls contribute latency and a request count and nothing to
+            # the token figures. The request count is the one that binds anyway
+            # -- twenty a day for the whole account.
+            with call_metrics.measure("embed", self._model):
+                embedding = await self._model_client().aembed_query(redacted)
         except Exception as exc:  # noqa: BLE001 - the integration raises its own
             # Everything above is written against EmbeddingError, and
             # embed_batch keys on it to represent a per-chunk failure.

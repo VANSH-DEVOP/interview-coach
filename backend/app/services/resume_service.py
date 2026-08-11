@@ -15,7 +15,7 @@ from app.models.resume import Resume, ResumeStatus
 from app.models.resume_chunk import ResumeChunk
 from app.repositories.resume_chunk_repository import ResumeChunkRepository
 from app.repositories.resume_repository import ResumeRepository
-from app.services.ai.degradation import record_fallback
+from app.services.ai.degradation import record_attempt, record_fallback
 from app.services.ai.rag import ResumeChunker
 from app.services.resume_parser import ResumeParser
 from app.services.storage.base import StorageService
@@ -132,6 +132,7 @@ class ResumeService:
 
         if not self.rag_service:
             return
+        record_attempt("index_resume")
         try:
             embedded = await self.rag_service.index_chunks(
                 resume.id, user_id, chunks, redactor=self.redactor

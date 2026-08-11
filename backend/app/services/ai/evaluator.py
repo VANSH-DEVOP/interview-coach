@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from app.services.ai.degradation import record_fallback
+from app.services.ai.degradation import record_attempt, record_fallback
 from app.services.ai.tracing import traced
 from app.services.ai.untrusted import Fence
 
@@ -323,6 +323,7 @@ class FallbackEvaluator(Evaluator):
     async def evaluate(
         self, *, target_role: str | None, transcript: list[QAPair]
     ) -> EvaluationResult:
+        record_attempt("evaluate")
         try:
             return await self._primary.evaluate(
                 target_role=target_role, transcript=transcript

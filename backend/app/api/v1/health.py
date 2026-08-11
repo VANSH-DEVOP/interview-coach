@@ -9,9 +9,55 @@ from app.core import rate_limit
 from app.core.config import get_settings
 from app.db.session import get_session
 from app.services import job_queue
-from app.services.ai import degradation, retrieval_metrics
+from app.services.ai import call_metrics, degradation, retrieval_metrics
 
 router = APIRouter(tags=["system"])
+
+
+class AiOperationHealth(BaseModel):
+    """One kind of provider call. Typed rather than a loose dict so `calls` stays
+    an integer in the response instead of being coerced to 4.0."""
+
+    calls: int
+    ok: int
+    failed: int
+    failure_rate: float | None = None
+    avg_ms: float | None = None
+    max_ms: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+
+
+class AiCallHealth(BaseModel):
+    """What the provider actually cost, per round-trip.
+
+    `failure_rate` is the provider's reachability; `fallback_rate` on the block
+    above is the *user-visible* degradation, and they differ on purpose. A call
+    that succeeds and returns unparseable JSON is counted here as ok and there
+    as a fallback -- which is precisely the shape of a changed response schema,
+    and would be invisible if the two were one number.
+
+    `input_tokens` and `output_tokens` are null rather than zero when nothing
+    reported usage: Google's embedding endpoint returns none, so on a
+    deployment doing only indexing there is no token data rather than no token
+    spend. Counted per process and reset on restart -- a diagnostic, not an
+    invoice.
+    """
+
+    calls: int
+    ok: int
+    failed: int
+    failure_rate: float | None = None
+    avg_ms: float | None = None
+    max_ms: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    last_model: str | None = None
+    last_error: str | None = None
+    last_at: str | None = None
+    # generate vs embed. They fail for different reasons, and a retired
+    # embedding model already hid behind a working chat model here once.
+    by_operation: dict[str, AiOperationHealth] = {}
 
 
 class AiHealth(BaseModel):
@@ -20,13 +66,21 @@ class AiHealth(BaseModel):
     `fallbacks` counts degradations since process start. A non-zero value means
     some users received generic questions or feedback; a steadily climbing one
     means the provider is effectively down even though every request succeeded.
+
+    `fallback_rate` is what to alert on. The raw count cannot be: three
+    fallbacks is a catastrophe against thirty attempts and a rounding error
+    against three thousand. It is null when nothing has been attempted, since a
+    deployment with no API key has no rate rather than a perfect one.
     """
 
     configured: bool
+    attempts: int
     fallbacks: int
+    fallback_rate: float | None = None
     last_operation: str | None = None
     last_error: str | None = None
     last_at: str | None = None
+    calls: AiCallHealth
 
 
 class QueueHealth(BaseModel):
@@ -183,7 +237,11 @@ async def health(
             }
         ),
         ai=AiHealth.model_validate(
-            {"configured": bool(settings.GEMINI_API_KEY), **degradation.snapshot()}
+            {
+                "configured": bool(settings.GEMINI_API_KEY),
+                **degradation.snapshot(),
+                "calls": call_metrics.snapshot(),
+            }
         ),
         queue=QueueHealth.model_validate(
             {

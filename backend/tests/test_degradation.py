@@ -48,11 +48,32 @@ class _BrokenEvaluator(Evaluator):
 
 async def test_snapshot_starts_clean():
     assert degradation.snapshot() == {
+        "attempts": 0,
         "fallbacks": 0,
+        # Null rather than 0.0: nothing has been attempted, so there is no rate.
+        # Zero would read as "the provider is healthy" on a deployment that has
+        # never called it.
+        "fallback_rate": None,
         "last_operation": None,
         "last_error": None,
         "last_at": None,
     }
+
+
+async def test_the_fallback_rate_has_a_denominator():
+    """A fallback count on its own cannot be alerted on: three failures is a
+    catastrophe against thirty attempts and noise against three thousand."""
+    working = FallbackQuestionGenerator(StaticQuestionGenerator(), StaticQuestionGenerator())
+    broken = FallbackQuestionGenerator(_BrokenGenerator(), StaticQuestionGenerator())
+
+    for _ in range(3):
+        await working.initial_questions(target_role="Backend", resume_text=None)
+    await broken.initial_questions(target_role="Backend", resume_text=None)
+
+    snapshot = degradation.snapshot()
+    assert snapshot["attempts"] == 4
+    assert snapshot["fallbacks"] == 1
+    assert snapshot["fallback_rate"] == 0.25
 
 
 async def test_initial_questions_fallback_is_recorded():

@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from app.services.ai.degradation import record_fallback
+from app.services.ai.degradation import record_attempt, record_fallback
 
 if TYPE_CHECKING:
     from app.services.ai.masking import Redactor
@@ -128,6 +128,7 @@ class FallbackQuestionGenerator(QuestionGenerator):
         resume_id: uuid.UUID | None = None,
         spec: "InterviewSpec | None" = None,
     ) -> list[GeneratedQuestion]:
+        record_attempt("initial_questions")
         try:
             return await self._primary.initial_questions(
                 target_role=target_role,
@@ -152,6 +153,7 @@ class FallbackQuestionGenerator(QuestionGenerator):
         resume_text: str | None,
         resume_id: uuid.UUID | None = None,
     ) -> GeneratedQuestion | None:
+        record_attempt("follow_up")
         try:
             return await self._primary.follow_up(
                 question=question,

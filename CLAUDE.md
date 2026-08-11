@@ -71,6 +71,19 @@ Google retires model IDs, and a retired ID is a 404 that the fallback layer hide
 
 Degradations are recorded by `app/services/ai/degradation.py` and reported in the `ai` block of `GET /health` (`fallbacks`, `last_operation`, `last_error`). **Any new `except` that silently swaps in a fallback must call `record_fallback()`** — that counter is the only thing standing between a dead provider and a system that looks fine. A non-zero `fallbacks` count in a test environment means the AI path is broken, not that the fallback is working.
 
+### AI-call telemetry
+
+Two modules, two questions, and keeping them apart is the whole design:
+
+- **`degradation.py` — is the output real?** `record_attempt()` at each fallback wrapper is the denominator for `record_fallback()`, so `/health` reports a **`fallback_rate`** and not just a count. Alert on the rate: three fallbacks is a catastrophe against thirty attempts and noise against three thousand. It is `null`, never `0.0`, when nothing has been attempted — zero would read as a healthy provider on a deployment with no API key.
+- **`call_metrics.py` — is the provider reachable, and what did it cost?** Latency, token spend and `failure_rate`, recorded **at the transport** (`GeminiClient.generate_json`, `EmbeddingService._embed_uncached`) for the same reason redaction lives there: measured at the boundary, a new call site cannot forget to be measured, because it never has to remember. Reported under `ai.calls`, broken down `by_operation`.
+
+**Only the network round-trip is inside the measurement.** A reply that arrives and then fails to parse is recorded as a call that *succeeded* — the provider answered, it took that long, it cost those tokens — and as a *fallback*. That is deliberate: collapsing the two hides "provider up, output garbage", which is exactly the shape of a changed response schema. `tests/test_call_metrics.py` pins it.
+
+Two nulls that are not zeros, for the same reason as `cache_errors` vs `cache_misses`: **embedding calls carry no token counts** (Google returns no usage for them), so `input_tokens` is `null` rather than `0` — a zero would average in and understate spend. It matters less than it sounds, since the binding free-tier constraint is twenty *requests* a day, and requests are counted exactly.
+
+An operation is not a call: one `initial_questions` may spend two provider calls (generate, then a corrective refine) and is still one thing that either worked or came back generic. That is why `attempts` is counted at the wrappers and `calls` at the transport, and why the two rates differ.
+
 `FallbackQuestionGenerator` / `FallbackEvaluator` wrap the primary and catch *any* exception. `GeminiClient` (`gemini_client.py`) and `EmbeddingService` call the provider through **LangChain's `langchain-google-genai` integration**, and raise `GeminiError` / `EmbeddingError` on any failure.
 
 **The seam is deliberately unchanged by that.** `generate_json(system_instruction=..., prompt=...) -> parsed JSON`, and the exception types, are what every caller and test above the client is written against — only the transport moved. Keep it that way: dissolving these wrappers into direct LangChain calls at each site would move the redaction guarantee to every one of them, and `masking.py` exists so a call site *cannot* forget.

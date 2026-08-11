@@ -154,3 +154,61 @@ async def test_an_unreadable_heartbeat_is_unknown_not_dead(client, stub_db_up, a
 
     assert body["worker"]["alive"] is None
     assert body["status"] == "ok"
+
+
+async def test_ai_telemetry_is_reported(client, stub_db_up):
+    """Latency, token spend and both rates, in the block an operator reads."""
+    from app.services.ai import call_metrics, degradation
+
+    call_metrics.reset()
+    degradation.reset()
+    degradation.record_attempt("initial_questions")
+    degradation.record_attempt("initial_questions")
+    degradation.record_fallback("initial_questions", RuntimeError("HTTP 429"))
+    call_metrics.record_call(
+        operation="generate",
+        model="gemini-flash-latest",
+        outcome="ok",
+        duration_ms=250.0,
+        input_tokens=800,
+        output_tokens=200,
+    )
+    call_metrics.record_call(
+        operation="embed", model="models/gemini-embedding-001", outcome="ok", duration_ms=50.0
+    )
+
+    ai = (await client.get("/api/v1/health")).json()["ai"]
+
+    # The number to alert on: a count alone cannot distinguish one bad hour
+    # from a dead provider.
+    assert ai["attempts"] == 2
+    assert ai["fallback_rate"] == 0.5
+
+    calls = ai["calls"]
+    assert calls["calls"] == 2
+    assert calls["failure_rate"] == 0.0
+    assert calls["avg_ms"] == 150.0
+    # Only the chat call reports usage; the embedding contributes none rather
+    # than a zero that would understate spend per call.
+    assert (calls["input_tokens"], calls["output_tokens"]) == (800, 200)
+    assert calls["by_operation"]["embed"]["input_tokens"] is None
+    # Integers stay integers rather than being coerced to floats.
+    assert calls["by_operation"]["generate"]["calls"] == 1
+
+    call_metrics.reset()
+    degradation.reset()
+
+
+async def test_ai_rates_are_null_before_anything_is_attempted(client, stub_db_up):
+    """Zero would read as a healthy provider on a deployment that has never
+    called one."""
+    from app.services.ai import call_metrics, degradation
+
+    call_metrics.reset()
+    degradation.reset()
+
+    ai = (await client.get("/api/v1/health")).json()["ai"]
+
+    assert ai["fallback_rate"] is None
+    assert ai["calls"]["failure_rate"] is None
+    assert ai["calls"]["avg_ms"] is None
