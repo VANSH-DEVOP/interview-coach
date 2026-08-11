@@ -71,9 +71,12 @@ class GeminiQuestionGenerator(QuestionGenerator):
         client: ModelClient,
         retriever: "Retriever | None" = None,
         redactor: "Redactor | None" = None,
+        streaming: bool = False,
     ) -> None:
         self._client = client
         self._retriever = retriever
+        # Applies to follow_up only -- see the branch there, and AI_STREAMING.
+        self._streaming = streaming
         # Only for retrieval: the client redacts its own prompts. Retrieval
         # embeds the query on a different HTTP call that the client never sees.
         self._redactor = redactor
@@ -350,8 +353,14 @@ class GeminiQuestionGenerator(QuestionGenerator):
             f"\nQuestion: {question}\nAnswer: {fence.wrap(answer)}"
             f"{resume_context}"
         )
-        payload = await self._client.generate_json(
-            system_instruction=_SYSTEM, prompt=prompt
+        # The one path where streaming is safe: a single call, no critique step
+        # to rewrite the result afterwards, and a candidate waiting on the POST.
+        # Both methods return the same parsed JSON and raise the same error, so
+        # nothing below this line knows which was used.
+        payload = await (
+            self._client.stream_json(system_instruction=_SYSTEM, prompt=prompt)
+            if self._streaming
+            else self._client.generate_json(system_instruction=_SYSTEM, prompt=prompt)
         )
         if not isinstance(payload, dict) or not payload.get("ask_follow_up"):
             return None

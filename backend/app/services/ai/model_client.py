@@ -27,7 +27,10 @@ every one of them.
 
 from __future__ import annotations
 
+import inspect
 import logging
+import time
+from collections.abc import Callable
 from typing import Any
 
 from app.services.ai import call_metrics
@@ -141,6 +144,75 @@ class ModelClient:
             # Not `json.loads`: Anthropic has no JSON mode, so its reply may
             # arrive fenced or with a sentence around it. See providers.py.
             return extract_json(_text_of(reply))
+        except (ValueError, TypeError) as exc:
+            raise ModelError(
+                f"Unexpected {self._provider} response shape: {exc}"
+            ) from exc
+
+
+    @traced("model.stream_json", run_type="llm")
+    async def stream_json(
+        self,
+        *,
+        system_instruction: str,
+        prompt: str,
+        on_chunk: Callable[[str], Any] | None = None,
+    ) -> Any:
+        """Stream the reply, then return the same parsed JSON `generate_json` does.
+
+        **The contract is deliberately identical** -- parsed JSON out,
+        `ModelError` on failure -- so a caller can switch between the two
+        without changing anything else, and so the streaming path cannot drift
+        into weaker guarantees than the buffered one. Redaction, tracing and
+        telemetry all sit exactly where they do above.
+
+        `on_chunk` receives each text fragment as it arrives, which is the only
+        reason to prefer this method. Sync or async callables both work. What it
+        does *not* do is emit partial JSON: the parse happens once, at the end,
+        against the accumulated text, because half an object is not a smaller
+        answer -- it is an invalid one.
+
+        A caller that passes no `on_chunk` still gets something the buffered
+        path cannot measure: time to first token, which is the number streaming
+        exists to improve.
+        """
+        redaction = self._redactor.apply(prompt)
+        if redaction.counts:
+            logger.info(
+                "Redacted %s from prompt before the model call.", redaction.summary()
+            )
+
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        pieces: list[str] = []
+        try:
+            with call_metrics.measure("generate", self._model) as call:
+                started = time.perf_counter()
+                stream = self._model_client().astream(
+                    [
+                        SystemMessage(content=system_instruction),
+                        HumanMessage(content=redaction.text),
+                    ]
+                )
+                async for chunk in stream:
+                    # Usage arrives on whichever chunk the provider chooses --
+                    # first for some, last for others, never for a third -- so
+                    # every chunk is offered and the first answer is kept.
+                    call.usage(chunk)
+                    text = _text_of(chunk)
+                    if not text:
+                        continue
+                    call.first_token((time.perf_counter() - started) * 1000)
+                    pieces.append(text)
+                    if on_chunk is not None:
+                        result = on_chunk(text)
+                        if inspect.isawaitable(result):
+                            await result
+        except Exception as exc:  # noqa: BLE001 - the integration raises its own
+            raise ModelError(f"{self._provider} stream failed: {exc}") from exc
+
+        try:
+            return extract_json("".join(pieces))
         except (ValueError, TypeError) as exc:
             raise ModelError(
                 f"Unexpected {self._provider} response shape: {exc}"

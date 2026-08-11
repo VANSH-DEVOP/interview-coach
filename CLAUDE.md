@@ -117,6 +117,22 @@ It deliberately does **not** repair malformed JSON — no trailing-comma or sing
 
 Without that extraction, pointing `AI_PROVIDER` at Anthropic breaks generation on the first call *quietly*: `ModelError` is exactly what the fallback layer catches, so interviews still complete and are merely generic. `tests/test_providers.py` covers it, and drives the real `ModelClient` at a local OpenAI-compatible server — the path Groq and Ollama take — asserting the reply parses, **redaction still holds across the provider swap**, and token usage is still recorded.
 
+### Streaming
+
+`ModelClient.stream_json()` consumes the model with `.astream()` and returns **the same parsed JSON `generate_json` does**, raising the same `ModelError`. That symmetry is the design: a streaming path with weaker guarantees than the buffered one is how a "faster" code path becomes the one that ships broken output. Redaction, tracing and telemetry sit exactly where they do on the buffered call — there is a test that the prompt is still redacted, because a second method on the transport is precisely where that could quietly stop being true.
+
+`on_chunk` receives text fragments (sync or async callables both work). It never emits partial JSON — the parse happens once, at the end, because half an object is not a smaller answer, it is an invalid one.
+
+**Only `follow_up` is wired, and the limit is structural rather than effort:**
+
+- `initial_questions` runs generate → **critique → refine**. Streaming it would show the candidate questions that are then rewritten or trimmed under them.
+- Evaluation is **queued to a worker**; nobody is watching a stream.
+- `follow_up` is one call, no critique, with a candidate waiting on the POST.
+
+`AI_STREAMING=false` by default. With no `on_chunk` wired to an HTTP surface, what it buys today is **`first_token_ms`** in `/health` — null rather than zero on buffered calls, since those did not fail to be fast, they have no such measurement to make.
+
+**The HTTP surface is the missing half, and it is blocked on the session model.** A `StreamingResponse` body runs *after* the route returns, when the request-scoped session from `get_session` has already been committed and closed — so persisting a follow-up mid-stream would need a second transaction opened by hand. That deserves its own design pass rather than a bolt-on.
+
 **Embeddings do not follow `AI_PROVIDER`.** A Chroma collection has fixed dimensionality and embedding models disagree about it (3072 vs 1536 vs 768), so switching does not degrade — it raises on the first query against an existing index. Making embeddings swappable means keying the collection name on the model so a switch starts a fresh index, plus re-embedding every resume against 20 requests/day. Worth doing; deliberately not bundled in.
 
 `GeminiQuestionGenerator` and `GeminiEvaluator` keep their names — 67 references, nearly all test churn, and unlike the transport they build prompts and parse JSON rather than owning the connection. A known naming wart, not a claim.

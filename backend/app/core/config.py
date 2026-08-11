@@ -148,6 +148,19 @@ class Settings(BaseSettings):
     # interview quietly going generic. Check /health's `ai.calls.failure_rate`
     # if that is the shape of what you are seeing.
     AI_JSON_MODE: bool = True
+    # Consume the model as a token stream where the shape of the call allows it.
+    #
+    # Only `follow_up` qualifies, and the reason is structural rather than
+    # effort. `initial_questions` runs generate -> critique -> refine, so
+    # streaming it would show the candidate questions that are then rewritten or
+    # trimmed under them; evaluation is queued to a worker and nobody is
+    # watching. A single-call path with a user waiting on it is the only place
+    # streaming is both safe and useful.
+    #
+    # With no `on_chunk` wired to an HTTP surface yet, what this buys today is
+    # `first_token_ms` in /health -- the measurement that would justify building
+    # that surface, which a buffered call cannot produce.
+    AI_STREAMING: bool = False
 
     @property
     def ai_api_key(self) -> str | None:

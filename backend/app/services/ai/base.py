@@ -207,7 +207,12 @@ def get_question_generator(
             redactor=redactor,
         )
         return FallbackQuestionGenerator(
-            GeminiQuestionGenerator(client, retriever=retriever, redactor=redactor),
+            GeminiQuestionGenerator(
+                client,
+                retriever=retriever,
+                redactor=redactor,
+                streaming=settings.AI_STREAMING,
+            ),
             StaticQuestionGenerator(),
         )
     return StaticQuestionGenerator()

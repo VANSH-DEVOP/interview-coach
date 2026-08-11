@@ -26,6 +26,13 @@ class AiOperationHealth(BaseModel):
     max_ms: float | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # Streamed calls only. `avg_first_token_ms` is what streaming exists to
+    # improve and what a buffered call cannot measure, so it is null rather than
+    # zero when nothing streamed -- the buffered path did not fail to be fast,
+    # it has no such measurement to make.
+    streamed: int = 0
+    avg_first_token_ms: float | None = None
+    max_first_token_ms: float | None = None
 
 
 class AiCallHealth(BaseModel):

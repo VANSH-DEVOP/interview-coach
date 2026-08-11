@@ -61,6 +61,12 @@ class _OperationState:
     failed: int = 0
     total_ms: float = 0.0
     max_ms: float = 0.0
+    # Time to the first token, streamed calls only. The number streaming exists
+    # to improve, and the one a non-streamed call cannot produce: without it
+    # "streaming made this feel faster" is an opinion.
+    streamed: int = 0
+    first_token_total_ms: float = 0.0
+    first_token_max_ms: float = 0.0
     # None until a call reports usage, so an operation that never reports it
     # (embeddings) stays distinguishable from one that reported zero.
     input_tokens: int | None = None
@@ -113,6 +119,7 @@ def record_call(
     duration_ms: float,
     input_tokens: int | None = None,
     output_tokens: int | None = None,
+    first_token_ms: float | None = None,
     error: str | None = None,
 ) -> None:
     """Record one round-trip to the provider, and log it as one structured line."""
@@ -130,6 +137,11 @@ def record_call(
     if output_tokens is not None:
         stats.output_tokens = (stats.output_tokens or 0) + output_tokens
 
+    if first_token_ms is not None:
+        stats.streamed += 1
+        stats.first_token_total_ms += first_token_ms
+        stats.first_token_max_ms = max(stats.first_token_max_ms, first_token_ms)
+
     _state.last_model = model
     _state.last_at = _now()
 
@@ -143,6 +155,8 @@ def record_call(
         trace["input_tokens"] = input_tokens
     if output_tokens is not None:
         trace["output_tokens"] = output_tokens
+    if first_token_ms is not None:
+        trace["first_token_ms"] = round(first_token_ms, 1)
 
     if outcome == "failed":
         _state.last_error = error
@@ -163,10 +177,25 @@ class _Call:
 
     input_tokens: int | None = None
     output_tokens: int | None = None
+    first_token_ms: float | None = None
 
     def usage(self, reply: Any) -> None:
-        """Take token counts from the provider's reply, if it carries any."""
-        self.input_tokens, self.output_tokens = usage_of(reply)
+        """Take token counts from the provider's reply, if it carries any.
+
+        Called per chunk when streaming, so it keeps the first non-empty answer
+        rather than the last: only some chunks carry usage, and a later empty
+        one would erase it.
+        """
+        input_tokens, output_tokens = usage_of(reply)
+        if input_tokens is not None:
+            self.input_tokens = input_tokens
+        if output_tokens is not None:
+            self.output_tokens = output_tokens
+
+    def first_token(self, elapsed_ms: float) -> None:
+        """Note when the first token arrived. Streamed calls only."""
+        if self.first_token_ms is None:
+            self.first_token_ms = elapsed_ms
 
 
 @contextmanager
@@ -198,6 +227,7 @@ def measure(operation: Operation, model: str) -> Iterator[_Call]:
             duration_ms=(time.perf_counter() - started) * 1000,
             input_tokens=call.input_tokens,
             output_tokens=call.output_tokens,
+            first_token_ms=call.first_token_ms,
         )
 
 
@@ -211,6 +241,15 @@ def _summarise(stats: _OperationState) -> dict[str, object]:
         "max_ms": round(stats.max_ms, 1) if stats.calls else None,
         "input_tokens": stats.input_tokens,
         "output_tokens": stats.output_tokens,
+        "streamed": stats.streamed,
+        "avg_first_token_ms": (
+            round(stats.first_token_total_ms / stats.streamed, 1)
+            if stats.streamed
+            else None
+        ),
+        "max_first_token_ms": (
+            round(stats.first_token_max_ms, 1) if stats.streamed else None
+        ),
     }
 
 
