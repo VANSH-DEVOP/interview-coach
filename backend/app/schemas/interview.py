@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,10 +30,18 @@ class InterviewCreate(BaseModel):
     )
 
 
+# How an answer reached us. Constrained at the schema so a client cannot invent
+# a provenance, and open to extension when a server-side transcriber lands.
+TranscriptSource = Literal["typed", "spoken"]
+
+
 class AnswerCreate(BaseModel):
     question_id: uuid.UUID
     content: str = Field(min_length=1)
     duration_seconds: int | None = Field(default=None, ge=0)
+    # Defaults to "typed": an older client that does not send this is telling
+    # the truth by omission.
+    transcript_source: TranscriptSource = "typed"
 
 
 class AnswerRead(BaseModel):
@@ -41,6 +50,7 @@ class AnswerRead(BaseModel):
     id: uuid.UUID
     content: str
     duration_seconds: int | None
+    transcript_source: TranscriptSource
     created_at: datetime
 
 

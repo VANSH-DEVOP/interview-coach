@@ -143,7 +143,12 @@ Scaffolding exists; the feature does not.
   The transport was renamed `ModelClient`/`ModelError` first, in its own commit.
   `AI_JSON_MODE=false` is the escape hatch for endpoints that reject `response_format` — added after noticing the first version sent it unconditionally with no way to turn it off, which would have made an older Ollama fail every call with no config-level fix.
   **Embeddings stay on Gemini** — Chroma collections are fixed-dimension, so swapping raises rather than degrades. The fix (collection name keyed on the embedding model, plus a re-index) is written up in `config.py` as the natural follow-up.
-- [ ] **Voice interviews** (speech-to-text answers) — would give `duration_seconds` a real purpose.
+- [~] **Voice interviews** (speech-to-text answers) — **phase 1 done 2026-08-11**: dictation for answers via the browser's Web Speech API, `Answer.transcript_source` (migration `0008`), provenance shown in the UI. Zero provider requests: the browser recognises, so the 20/day ceiling is untouched.
+  Shape decided first: questions stay **written** (text is the substrate, speech a layer over it), answers are **speak *or* type per answer** so voice can never block completing an interview, and there is no voice-only mode — the product's output is a report that quotes and scores text.
+  **Accepted boundary, explicitly:** audio cannot be redacted before it leaves, because redaction operates on text that does not exist until after transcription. The recogniser gets unredacted speech; the transcript re-enters the normal path and is redacted before the evaluator. Disclosed in the UI, and no audio is retained.
+  - [ ] **Phase 2: pacing feedback.** `QAPair` carries only question and answer, so the evaluator has never seen `duration_seconds`. Voice is what makes "four minutes on a thirty-second question" worth telling someone.
+  - [ ] **Phase 3: text-to-speech** play button on questions. Small.
+  - [ ] **Phase 4: server-side STT** for Safari/Firefox — only if the coverage gap bites, since it is the part that costs money and needs audio upload.
 
 ### Closed rather than done — decided against, with the reason
 

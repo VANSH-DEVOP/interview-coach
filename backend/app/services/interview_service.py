@@ -169,6 +169,7 @@ class InterviewService:
             question_id=question.id,
             content=payload.content,
             duration_seconds=payload.duration_seconds,
+            transcript_source=payload.transcript_source,
         )
         self.interviews.session.add(answer)
         # Answering a question the candidate had passed over reinstates it.
@@ -232,6 +233,9 @@ class InterviewService:
 
         question.answer.content = payload.content
         question.answer.duration_seconds = payload.duration_seconds
+        # A re-answer can change modality -- typed over a dictated first
+        # attempt is the common one -- so the provenance is replaced too.
+        question.answer.transcript_source = payload.transcript_source
         # Un-skip: providing an answer contradicts having passed.
         question.skipped = False
 

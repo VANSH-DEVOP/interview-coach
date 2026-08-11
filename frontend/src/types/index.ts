@@ -46,10 +46,14 @@ export const MIN_QUESTION_COUNT = 3;
 export const MAX_QUESTION_COUNT = 10;
 export const DEFAULT_QUESTION_COUNT = 5;
 
+/** How an answer reached the server. Mirrors the backend's TranscriptSource. */
+export type TranscriptSource = "typed" | "spoken";
+
 export interface Answer {
   id: string;
   content: string;
   duration_seconds: number | null;
+  transcript_source: TranscriptSource;
   created_at: string;
 }
 

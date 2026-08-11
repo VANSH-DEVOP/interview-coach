@@ -409,3 +409,94 @@ async def test_progress_route_is_not_shadowed_by_the_report_id_route(api, regist
     """/reports/progress must not be parsed as /reports/{report_id}."""
     response = await api.get("/api/v1/reports/progress", headers=registered_user["headers"])
     assert response.status_code == 200
+
+
+# -- Answer provenance ----------------------------------------------------------
+
+
+async def test_an_answer_records_how_it_was_produced(api, registered_user):
+    """Typed and dictated text are not comparable: speech arrives as run-on,
+    largely unpunctuated prose, and the heuristic evaluator scores partly on
+    word depth. Without this column there is no way to notice that."""
+    headers = registered_user["headers"]
+    session = await _create_session(api, headers)
+    question = (await _questions(api, headers, session["id"]))[0]
+
+    response = await api.post(
+        f"/api/v1/interviews/{session['id']}/answers",
+        json={
+            "question_id": question["id"],
+            "content": "so i built the thing and then it scaled",
+            "duration_seconds": 47,
+            "transcript_source": "spoken",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["transcript_source"] == "spoken"
+    assert response.json()["duration_seconds"] == 47
+
+
+async def test_an_answer_defaults_to_typed(api, registered_user):
+    """An older client that does not send the field is telling the truth by
+    omission."""
+    headers = registered_user["headers"]
+    session = await _create_session(api, headers)
+    question = (await _questions(api, headers, session["id"]))[0]
+
+    response = await api.post(
+        f"/api/v1/interviews/{session['id']}/answers",
+        json={"question_id": question["id"], "content": "Typed out."},
+        headers=headers,
+    )
+
+    assert response.json()["transcript_source"] == "typed"
+
+
+async def test_an_invented_provenance_is_rejected(api, registered_user):
+    """Constrained at the schema so a client cannot invent one."""
+    headers = registered_user["headers"]
+    session = await _create_session(api, headers)
+    question = (await _questions(api, headers, session["id"]))[0]
+
+    response = await api.post(
+        f"/api/v1/interviews/{session['id']}/answers",
+        json={
+            "question_id": question["id"],
+            "content": "x",
+            "transcript_source": "telepathy",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+
+
+async def test_re_answering_replaces_the_provenance(api, registered_user):
+    """Typing over a dictated first attempt is the common case, and the row must
+    describe the answer that is actually stored."""
+    headers = registered_user["headers"]
+    session = await _create_session(api, headers)
+    question = (await _questions(api, headers, session["id"]))[0]
+    await api.post(
+        f"/api/v1/interviews/{session['id']}/answers",
+        json={
+            "question_id": question["id"],
+            "content": "spoken first",
+            "transcript_source": "spoken",
+        },
+        headers=headers,
+    )
+
+    replaced = await api.put(
+        f"/api/v1/interviews/{session['id']}/answers",
+        json={
+            "question_id": question["id"],
+            "content": "typed instead",
+            "transcript_source": "typed",
+        },
+        headers=headers,
+    )
+
+    assert replaced.json()["transcript_source"] == "typed"

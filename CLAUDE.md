@@ -286,6 +286,20 @@ Retrieval used to be issued `"skills and experience relevant to {role}"` (four f
 
 `rewrite()` falls back to the original string when every term is filler — a bad query is bad, but an empty one retrieves nothing and the caller cannot tell those apart from the result.
 
+## Voice answers (dictation)
+
+`frontend/src/hooks/use-dictation.ts` — the browser's own recogniser (Web Speech API), so it costs **zero provider requests** against a ceiling of 20/day. Speech-to-text on the way in, text everywhere after: `submit_answer` still receives text and nothing downstream knows the answer was spoken.
+
+**This is the one place a network boundary exists that `masking.py` cannot cover**, and it was an explicit decision rather than an oversight. Redaction operates on text, and the text does not exist until after transcription — so dictation hands a candidate's *unredacted* spoken answer to whoever recognises it (Google, in Chrome). The containment is that the leak stops there: the transcript re-enters the normal path and is redacted at the backend boundary before reaching the evaluator. The interface says so before the microphone turns on, and **no audio is retained** — nothing records, buffers or uploads a file.
+
+- **Speak or type, per answer — not per session.** A mic can fail and a room can be noisy, so voice must never block completing an interview. Same property the AI layer guarantees with its deterministic fallbacks.
+- **`supported` is feature-detected after mount**, not during render: the server has no `window`, and deciding it during render would make the first client paint disagree with the server's HTML. Recognition is solid in Chrome/Edge, partial in Safari, absent in Firefox — the control is hidden rather than offered and broken.
+- **Finalised phrases are appended, never replacing the draft**, so speech extends typed text and a dictated answer survives hand-editing. Interim results are preview only; committing them duplicates words when the recogniser revises them.
+
+`Answer.transcript_source` (`typed` | `spoken`, migration `0008`) records which. It exists because the two are **not comparable text**: speech arrives as run-on, largely unpunctuated prose, and `HeuristicEvaluator` scores partly on word depth — so equal-quality answers need not score alike, and without the column there is no way to notice. A plain `String(16)` rather than a Postgres enum, because the set will grow (a server-side transcriber is a different provenance) and widening an enum needs a migration where widening this does not. `server_default='typed'` so existing rows state what they are instead of being null and ambiguous.
+
+**Still open:** `QAPair` carries only `question` and `answer`, so the evaluator has never seen `duration_seconds`. Voice is what makes pacing feedback worth giving — that is phase 2.
+
 ## Rate limiting
 
 `app/core/rate_limit.py` is a pure mechanism — fixed-window counters, no knowledge of routes or users. The wiring (`limit_by_ip`, `limit_by_user`) lives in `app/api/deps.py` with the rest of the DI, and **must stay there**: that module deliberately has no `from __future__ import annotations`, because FastAPI has to resolve `Annotated[User, Depends(...)]` at runtime. When these dependencies lived in `core/`, FastAPI silently reinterpreted `user` as a *query parameter* and every AI route answered 422.

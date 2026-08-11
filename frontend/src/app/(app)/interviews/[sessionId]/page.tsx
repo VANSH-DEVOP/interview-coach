@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+import { useDictation } from "@/hooks/use-dictation";
 
 /** Seconds as m:ss, or plain seconds under a minute. */
 function formatDuration(seconds: number): string {
@@ -41,6 +42,19 @@ export default function InterviewSessionPage() {
   const [isCompleting, setIsCompleting] = useState(false);
   const [isSkipping, setIsSkipping] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
+  // Sticky for the whole answer: a candidate who dictated and then fixed a
+  // word by hand still produced speech, and the transcript reads like it.
+  const [dictated, setDictated] = useState(false);
+
+  // Appends rather than replaces, so speech extends a typed draft instead of
+  // destroying it, and a dictated answer survives being edited by hand.
+  const dictation = useDictation(
+    useCallback((text: string) => {
+      if (!text) return;
+      setDictated(true);
+      setDraft((previous) => (previous ? `${previous} ${text}` : text));
+    }, []),
+  );
   // True while replacing an answer that already exists, which switches the
   // submit from POST to PUT.
   const [isEditing, setIsEditing] = useState(false);
@@ -121,6 +135,7 @@ export default function InterviewSessionPage() {
   function handleStartEdit() {
     if (!activeQuestion?.answer) return;
     setDraft(activeQuestion.answer.content);
+    setDictated(false);
     setIsEditing(true);
     setError(null);
     // The clock restarts: the reported duration should describe the new attempt.
@@ -157,6 +172,7 @@ export default function InterviewSessionPage() {
           0,
           Math.round((Date.now() - questionStartedAt.current) / 1000),
         ),
+        transcript_source: dictated ? "spoken" : "typed",
       };
       // PUT replaces an existing answer (and its follow-up); POST creates one.
       const answer = isEditing
@@ -164,6 +180,7 @@ export default function InterviewSessionPage() {
         : await api.post<Answer>(`/interviews/${sessionId}/answers`, body);
       // Reflect locally, then reload to pick up any AI follow-up question.
       setDraft("");
+      setDictated(false);
       setIsEditing(false);
       setSession((prev) =>
         prev
@@ -316,14 +333,55 @@ export default function InterviewSessionPage() {
                   )}
                 </div>
                 <p className="mt-1 text-sm">{activeQuestion.answer.content}</p>
+                {activeQuestion.answer.transcript_source === "spoken" && (
+                  <p className="mt-1 text-xs text-muted-foreground">Dictated</p>
+                )}
               </div>
             ) : (
-              <Textarea
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                placeholder="Type your answer here…"
-                aria-label="Your answer"
-              />
+              <div className="space-y-2">
+                <Textarea
+                  value={
+                    dictation.interim ? `${draft} ${dictation.interim}`.trim() : draft
+                  }
+                  onChange={(e) => setDraft(e.target.value)}
+                  placeholder="Type your answer here…"
+                  aria-label="Your answer"
+                />
+
+                {dictation.supported && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      variant={dictation.listening ? "destructive" : "outline"}
+                      size="sm"
+                      onClick={dictation.listening ? dictation.stop : dictation.start}
+                      aria-pressed={dictation.listening}
+                    >
+                      {dictation.listening ? "Stop dictating" : "Dictate answer"}
+                    </Button>
+
+                    {dictation.listening ? (
+                      <span
+                        role="status"
+                        className="text-xs text-muted-foreground"
+                      >
+                        Listening — your speech is sent to your browser&apos;s speech
+                        service for transcription. No recording is kept.
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        Speaking sends audio to your browser&apos;s speech service.
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {dictation.error && (
+                  <p role="alert" className="text-xs text-destructive">
+                    {dictation.error}
+                  </p>
+                )}
+              </div>
             )}
 
             {error && (
