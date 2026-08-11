@@ -39,7 +39,7 @@ Scaffolding exists; the feature does not.
 - [x] **Abandon / delete a session.** (`ac2552f`) `POST /interviews/{id}/abandon` keeps the transcript; `DELETE /interviews/{id}` cascades to questions, answers, and the report (verified against Postgres). `SessionStatus.CREATED` is still unreachable — sessions are created IN_PROGRESS, which is arguably correct; left alone deliberately.
   ~~`SessionStatus.CREATED` and `ABANDONED` are unreachable~~ — sessions are created as `IN_PROGRESS` and there is no endpoint to abandon or delete one, even though `complete()` already handles the abandoned case (`interview_service.py:160`).
 - [x] **Answer timing.** (`836c0b8`) Per-question timer in the UI, sent with the answer, shown on answered questions. Verified round-trip.
-  - [ ] **Follow-up:** the evaluator still doesn't see timing. Pacing feedback ("4 minutes on a 30-second question") needs `duration` in `QAPair` and the prompt.
+  - [x] ~~**Follow-up:** the evaluator still doesn't see timing.~~ ✅ 2026-08-11 — `QAPair` carries `duration_seconds` and `transcript_source`, and the prompt annotates each question `[answered in 240s, dictated]`. It states that the clock covers thinking as well as answering, so the model cannot claim the candidate *spoke* for four minutes. Landed with voice interviews, which is what made the number worth acting on.
 - [x] **Question controls.** (`56e6924`) Skip (persisted via migration 0003, withdrawn by answering), re-answer via `PUT /interviews/{id}/answers` (deletes and regenerates the now-stale follow-up), and regenerate-questions (refused once anything is answered). Found a real bug: the regenerate response returned the *old* question ids because SQLAlchemy will not overwrite an already-loaded collection on re-query.
 - [x] **Interview configuration.** (`1e09557`, `2a84fae`) `interview_type` / `difficulty` / `question_count` on `InterviewCreate`, persisted via migration 0002, shaping the prompt, with UI selects. Migration verified up→down→up against Postgres with no autogenerate drift. System-design questions are stored as `question_type="technical"` — widening that enum was not needed.
   - Static fallback pool grew 3 → 10 distinct questions so any allowed count is honoured without repeats; its default output changed 3 → 5.
@@ -96,7 +96,12 @@ Scaffolding exists; the feature does not.
 - [ ] **httpOnly cookie BFF for tokens.** Tokens currently live in JS-readable cookies (`api-client.ts:35`), flagged as MVP in the code itself.
 - [x] **The Gemini API key is written to the logs in cleartext.** `GeminiClient` passes the key as a `?key=` query param, and httpx logs the full URL at INFO — so every AI call prints the key (seen in the backend container logs on 2026-07-27). Send it as the `x-goog-api-key` header instead, and/or set `logging.getLogger("httpx").setLevel(WARNING)`. Rotate the key that has already been logged.
   → **Done** in both `GeminiClient` and `EmbeddingService`; httpx/httpcore pinned to WARNING. Verified: at root DEBUG the key no longer appears in captured logs.
-  → ⚠️ **STILL OUTSTANDING: rotate the key in `.env`.** It has already been written to logs and must be replaced in Google AI Studio.
+  → **Rotating the logged key: hygiene, not an incident.** Re-assessed 2026-08-11 after the urgency was challenged, and the challenge was right. What was actually verified rather than assumed:
+    - **Never committed.** Every commit on every branch searched for the literal key and for any `AIza`-shaped string: nothing. The public GitHub repo is not a vector.
+    - **No longer in container logs.** Zero matches; the backend container was recreated and the old output is gone.
+    - **Lives only in gitignored `.env` files** on the developer's machine.
+    So the real exposure was terminal and container output on one laptop in July, before `e0e1ad6`. And the key is free-tier, capped at 20 requests/day — someone who steals it burns a day's quota, which is an annoyance rather than a loss.
+    **The condition that changes this: billing.** A leaked key on a billed project is a financial liability *retroactively* — the key that leaked in July is the key that gets charged. Rotate before enabling billing, before deploying anywhere multi-user, or before sharing logs or a screen. Until then, do it when convenient.
 - [x] ~~**CSP + security headers.**~~ ✅ 2026-08-11 — `backend/app/middleware/security_headers.py` (API) and `frontend/src/middleware.ts` (nonce CSP for the pages).
   Two surfaces, deliberately different: the API serves JSON and gets `default-src 'none'`; the frontend gets a nonce-based policy with `strict-dynamic` and no `'unsafe-inline'` for scripts.
   **Cost, measured before choosing:** the nonce forces `dynamic = "force-dynamic"` on the root layout, turning 11 prerendered routes into server-rendered ones. Required, not incidental — a prerendered page's inline hydration scripts are baked at build time with no nonce, so `strict-dynamic` blocks every script and the page is blank *with a 200 and correct-looking HTML*. Worth it because the tokens are in JS-readable cookies, so an injected script takes the session; the routes it costs are auth-gated shells that fetch client-side, on a single container with no CDN. **Revisit if a CDN appears or once the httpOnly BFF lands.**
@@ -148,7 +153,8 @@ Scaffolding exists; the feature does not.
   **Accepted boundary, explicitly:** audio cannot be redacted before it leaves, because redaction operates on text that does not exist until after transcription. The recogniser gets unredacted speech; the transcript re-enters the normal path and is redacted before the evaluator. Disclosed in the UI, and no audio is retained.
   - [x] **Phase 2: pacing feedback** ✅ 2026-08-11 — `QAPair` carries `duration_seconds` and `transcript_source`; the prompt annotates `[answered in 240s, dictated]`. It states that the clock covers thinking as well as answering, adds *nothing* when there is no duration (rather than "unknown", which invites reasoning about an absent number), and tells the model to ignore punctuation on dictated answers so it marks the candidate rather than the transcription. The heuristic evaluator ignores timing on purpose — a pacing rule with no model behind it is an arbitrary number dressed as judgement.
   - [x] **Phase 3: text-to-speech** ✅ 2026-08-11 — a play button on the question, `speechSynthesis`, rendered **locally** so nothing leaves the browser. Cancels before speaking (queueing is the default and would read two questions back to back) and stops on unmount and question change.
-  - [ ] **Phase 4: server-side STT** for Safari/Firefox — only if the coverage gap bites, since it is the part that costs money and needs audio upload.
+  - [x] ~~**Phase 4: server-side STT** for Safari/Firefox.~~ **Declined 2026-08-11**, and the arithmetic is why rather than the effort. One transcription call per answer means five per interview, plus generation and evaluation, against a ceiling of **20 requests a day for the whole account** — it would spend the constraint this project is architected around. It also reverses "no audio is retained": accepting uploads means a new size cap, a new attack surface, storage, and a delete-after-transcribe step that must not fail. The workaround costs a Firefox user nothing, because speak-or-type per answer already covers them.
+    **What would reopen it:** routing transcription through Groq's Whisper endpoint. The provider layer already speaks the OpenAI API, so `/audio/transcriptions` is a small addition, and Groq's free tier would keep it off the Gemini quota entirely. Audio upload and retention would still need designing.
 
 ### Closed rather than done — decided against, with the reason
 
@@ -193,22 +199,31 @@ dashboard.~~ — all five complete; superseded 2026-08-11.
 Current order. The split is deliberate: **nothing in the first group is a
 feature**, and all of it has to be true before anyone else can use this.
 
-1. **Rotate the Gemini API key.** Outstanding since 2026-07-27. The leak is
-   fixed (`e0e1ad6`); the leaked key is still live.
-2. **Lower the rate-limit defaults** below the account's 20/day, or move off the
+Items 5-7 of the original list are done; what is left is below, re-ordered
+2026-08-11.
+
+1. **Lower the rate-limit defaults** below the account's 20/day, or move off the
    free tier. Today they bound one user and not the account, which is the limit
    that actually breaks.
-3. **SMTP credentials.** Production refuses `EMAIL_BACKEND=log`, so the first
+2. **SMTP credentials.** Production refuses `EMAIL_BACKEND=log`, so the first
    production boot fails without them.
-4. **httpOnly cookie BFF.** The largest genuine security gap left, and the one
-   place the code itself admits it shipped an MVP (`api-client.ts:35`).
-5. **Error reporting (Sentry).** Also what the worker restart alarm needs — an
-   unhealthy worker is visible in `docker compose ps` and pages nobody.
-6. **AI-call telemetry** — fallback rate above all. A non-zero fallback rate is
-   the alert that would have caught the `gemini-1.5-flash` 404 on day one, and
-   the pipeline is *designed* to look healthy while degraded.
-7. Then the rest: CSP, per-user quotas, coverage threshold, dependency scanning,
-   config hygiene, `README.md`.
+3. **httpOnly cookie BFF.** The largest genuine security gap left, and the one
+   place the code itself admits it shipped an MVP (`api-client.ts:35`). It is
+   also what would let the frontend CSP relax back to static prerendering.
+4. **Rotate the Gemini API key** — *demoted from item 1.* It was listed as the
+   most urgent thing here for weeks on the strength of "a key was logged once",
+   without anyone checking what that exposed. It exposed one laptop's terminal
+   output, for a free-tier key capped at 20 requests a day. Do it before
+   enabling billing; see the Security section for the evidence.
+
+~~5. Error reporting (Sentry). 6. AI-call telemetry. 7. CSP, per-user quotas,
+coverage threshold, dependency scanning, config hygiene, README.~~ — all
+complete, 2026-08-11.
+
+**A note on how item 1 got to be item 1**, since the same mistake is easy to
+repeat: it was ranked on the *category* of the problem (a leaked credential)
+rather than on its blast radius. Five minutes of checking would have re-ranked
+it at any point. Rank on what an attacker actually gains.
 ---
 ## Doc maintenance
 - [x] ~~**`README.md` is stale** — it still describes question generation, evaluation, and RAG as unfilled "seams". They ship.~~ ✅ 2026-08-11 — rewritten against the tree rather than from memory: counts (9 models, 17 AI modules, 7 migrations, 54 test files) were taken from the repository and re-checked by a script, not guessed.
@@ -393,7 +408,7 @@ What the design turns on:
 The same cron is now the obvious home for the expired-token pruning below.
 
 ### Operational follow-ups (not code)
-- **Rotate the Gemini API key.** It was written to logs in cleartext before `e0e1ad6`.
+- **Rotate the Gemini API key** — low urgency, and verified as such on 2026-08-11 rather than assumed. Never committed to git; no longer present in container logs; free-tier and capped at 20 requests/day. The exposure was one laptop's terminal output in July. **Do it before enabling billing on the project**, which would make the old leak a financial liability retroactively.
 - **Pick an email provider before any real deployment.** `EMAIL_BACKEND=log` is
   the default and is *refused* in production, so a production start will fail
   until `SMTP_HOST` and credentials are set. That is deliberate — the
