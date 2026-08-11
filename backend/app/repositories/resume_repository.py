@@ -13,6 +13,14 @@ class ResumeRepository(BaseRepository[Resume]):
         stmt = select(Resume).where(Resume.id == resume_id, Resume.user_id == user_id)
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
+    async def count_for_user(self, user_id: uuid.UUID) -> int:
+        """How many resumes this account holds. The occupancy quota reads it.
+
+        A live count rather than a stored tally: deleting a resume has to free
+        the quota, and a tally is a second copy of a fact that already exists.
+        """
+        return await self.count(Resume.user_id == user_id)
+
     async def all_for_user(self, user_id: uuid.UUID) -> list[Resume]:
         """Every resume, unpaginated. For account deletion.
 

@@ -262,6 +262,20 @@ Retrieval used to be issued `"skills and experience relevant to {role}"` (four f
 - **Redis** — one counter per deployment. The limits guard *shared* things (the Gemini account's daily quota, guesses against one account), so per-replica counters would mean N× the intended ceiling. Counting and expiry happen in one Lua script: `INCR` then `EXPIRE` from the client is not atomic, and a process dying between them leaves a counter with no TTL that locks its subject out permanently.
 - **In-process** — correct for a single process, and the fallback when Redis fails. A Redis blip must not become either a total auth outage (fail closed) or unbounded credential stuffing (fail open), so the counters degrade to this process, get counted in `rate_limit.snapshot()`, and show up in `/health`'s `rate_limit` block. Keys are namespaced `ratelimit:{scope}:{key}`; arq owns `arq:*` in the same database.
 
+### Quotas vs rate limits
+
+Two different limits, deliberately two mechanisms. Collapsing them into one is the mistake to avoid, and each half is wrong for the other's job:
+
+- **Occupancy — what an account *holds*.** `MAX_RESUMES_PER_USER`, enforced in `ResumeService.upload` by **counting rows** (`ResumeRepository.count_for_user`). The number already exists in Postgres, so a counter would be a second copy that drifts; it is durable, so a Redis restart cannot hand out unlimited uploads; and deleting a resume frees the quota immediately, which is *correct* — the bounded resource is storage, and deleting returns it. The hourly upload rate limit bounded bursts and nothing bounded the total: 10/hour is ~7,300 files a month.
+- **Consumption — what an account *spends*.** `RATE_LIMIT_INTERVIEW_CREATES`, a **window counter** on the `interview_create` scope. A provider call cannot be un-spent, so counting `interview_sessions` rows would make delete-and-retry a way round the cap. `tests/api/test_quotas.py` asserts both directions: deleting a resume frees quota, deleting an interview does not.
+
+The quota check runs **before** `storage.save`, not after the row is built — a storage write is the side effect that outlives a failed request.
+
+`QuotaExceededError` is **429, not 403**, and that is a deliberate choice: `api-client.ts` classifies 401 *and* 403 as `kind === "auth"`, the one failure kind allowed to implicate the session, so a 403 would tell the UI the user's credentials were the problem. The `code` (`quota_exceeded` vs `rate_limited`) is what distinguishes them, because the way out differs — a rate limit clears by waiting, a quota by deleting. `Retry-After` is therefore set only on the interview cap, where waiting genuinely is the answer.
+
+**Neither of these bounds the *account*.** The Gemini free tier is 20 requests/day for the whole deployment, and per-user limits cannot fix that — N users at 5 interviews each still exhaust it. That remains open in `goals.md`.
+
+
 ## Storage
 
 `app/services/storage/` mirrors the same pattern: `StorageService` ABC, `LocalStorageService` impl, `get_storage_service()` factory keyed on `STORAGE_BACKEND`. Blobs live outside the code tree (`STORAGE_LOCAL_PATH`, a named Docker volume). Uploads use opaque keys `resumes/{user_id}/{uuid}.pdf`; the client filename is metadata only. Swapping to S3/R2 should touch this package only.

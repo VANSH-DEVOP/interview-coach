@@ -10,7 +10,12 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from app.core.config import get_settings
-from app.core.exceptions import NotFoundError, PayloadTooLargeError, ValidationError
+from app.core.exceptions import (
+    NotFoundError,
+    PayloadTooLargeError,
+    QuotaExceededError,
+    ValidationError,
+)
 from app.models.resume import Resume, ResumeStatus
 from app.models.resume_chunk import ResumeChunk
 from app.repositories.resume_chunk_repository import ResumeChunkRepository
@@ -66,6 +71,17 @@ class ResumeService:
                 f"File exceeds the {settings.MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)} MiB limit."
             )
 
+        # Before the blob is written, not after the row is built: the storage
+        # write is the side effect that outlives a failed request, and a
+        # rejected upload must not leave a file behind.
+        #
+        # Two concurrent uploads at the boundary can both read count == limit-1
+        # and both succeed, leaving the account one over. Accepted rather than
+        # locked: this bounds storage growth, it is not a licence being sold,
+        # and serialising every upload on a per-user lock costs more than the
+        # one file it saves.
+        await self._enforce_resume_quota(user_id)
+
         # Opaque, collision-free key; safe original name kept as metadata only.
         extension = _EXTENSION_BY_CONTENT_TYPE[content_type]
         key = f"resumes/{user_id}/{uuid.uuid4().hex}{extension}"
@@ -95,6 +111,25 @@ class ResumeService:
 
         await self._index(resume, user_id, parsed_text)
         return resume
+
+    async def _enforce_resume_quota(self, user_id: uuid.UUID) -> None:
+        """Refuse an upload that would take the account past its ceiling.
+
+        No `Retry-After`: waiting does not help, and offering a time would be a
+        lie. The way out is deleting a resume, so the message says that and the
+        details carry the numbers a UI needs to say it too.
+        """
+        limit = get_settings().MAX_RESUMES_PER_USER
+        if limit <= 0:
+            return
+
+        held = await self.resumes.count_for_user(user_id)
+        if held >= limit:
+            raise QuotaExceededError(
+                f"This account already holds its limit of {limit} resumes. "
+                "Delete one to upload another.",
+                details={"limit": limit, "current": held, "resource": "resumes"},
+            )
 
     async def _index(
         self, resume: Resume, user_id: uuid.UUID, parsed_text: str | None

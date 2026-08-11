@@ -29,12 +29,22 @@ InterviewSvc = Annotated[InterviewService, Depends(get_interview_service)]
 # Applied to every route that costs a Gemini call. Reads are not limited.
 AiRateLimit = Depends(limit_by_user("ai"))
 
+# Creation only, and a *daily* cap rather than the hourly burst guard above --
+# 20/hour is 480/day, which bounds nothing anyone would notice.
+#
+# A counter, not a count of `interview_sessions` rows, on purpose: starting an
+# interview spends a provider call against an account ceiling of twenty a day,
+# and deleting the session afterwards cannot un-spend it. Counting rows would
+# make delete-and-retry a way round this. The resume quota is the opposite case
+# and is enforced the opposite way -- see MAX_RESUMES_PER_USER.
+InterviewCreateQuota = Depends(limit_by_user("interview_create"))
+
 
 @router.post(
     "",
     response_model=InterviewRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[AiRateLimit],
+    dependencies=[AiRateLimit, InterviewCreateQuota],
 )
 async def create_interview(
     payload: InterviewCreate, current_user: CurrentUser, interviews: InterviewSvc

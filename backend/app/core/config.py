@@ -176,6 +176,38 @@ class Settings(BaseSettings):
     # Upload abuse / storage growth. Per user.
     RATE_LIMIT_UPLOAD_REQUESTS: int = 10
     RATE_LIMIT_UPLOAD_WINDOW_SECONDS: int = 3600
+    # Interviews one user may start per day. A *consumption* cap, so it is a
+    # counter rather than a row count: starting an interview spends a provider
+    # call, and deleting the session afterwards cannot un-spend it. Counting
+    # `interview_sessions` rows instead would make delete-and-retry a way round
+    # this. See MAX_RESUMES_PER_USER for the case that works the other way.
+    #
+    # The hourly `ai` limit above bounds bursts; this bounds the day, which the
+    # hourly one does not (20/hour is 480/day).
+    RATE_LIMIT_INTERVIEW_CREATES: int = 5
+    RATE_LIMIT_INTERVIEW_WINDOW_SECONDS: int = 60 * 60 * 24
+
+    # -- Per-user quotas -------------------------------------------------------
+    # How many resumes one account may keep. An *occupancy* quota -- a ceiling
+    # on what is held, not on what is spent -- so it is enforced by counting
+    # rows rather than by a counter, for three reasons:
+    #
+    #   * The number already exists in Postgres. A counter would be a second
+    #     copy of a fact, and the two would drift.
+    #   * It is durable. A Redis restart must not hand out unlimited uploads.
+    #   * Deleting a resume frees the quota immediately, which is *correct*
+    #     here: the resource being bounded is storage, and deleting returns it.
+    #
+    # The rate limit above bounds uploads per hour; nothing bounded the total,
+    # so 10/hour was 7,300 files a month with no ceiling at all.
+    #
+    # Zero or less means unlimited. Deliberately not `int | None`: an optional
+    # int cannot express "unlimited" through the environment at all -- `null`
+    # fails validation, and a blank value falls back to this default because of
+    # `env_ignore_empty`. That left an operator no way to switch the quota off,
+    # while `MAX_RESUMES_PER_USER=0` -- the obvious guess for it -- rejected
+    # every upload instead.
+    MAX_RESUMES_PER_USER: int = 10
 
     # -- Email -----------------------------------------------------------------
     # "log" writes messages to the log instead of sending them: no credentials,

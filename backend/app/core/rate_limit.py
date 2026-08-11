@@ -189,6 +189,13 @@ _LIMITS: dict[str, tuple[str, str]] = {
     "auth": ("RATE_LIMIT_AUTH_ATTEMPTS", "RATE_LIMIT_AUTH_WINDOW_SECONDS"),
     "ai": ("RATE_LIMIT_AI_REQUESTS", "RATE_LIMIT_AI_WINDOW_SECONDS"),
     "upload": ("RATE_LIMIT_UPLOAD_REQUESTS", "RATE_LIMIT_UPLOAD_WINDOW_SECONDS"),
+    # A daily consumption cap rather than a burst guard. Counter-based on
+    # purpose: an interview spends a provider call, and deleting the session
+    # afterwards must not refund it.
+    "interview_create": (
+        "RATE_LIMIT_INTERVIEW_CREATES",
+        "RATE_LIMIT_INTERVIEW_WINDOW_SECONDS",
+    ),
 }
 
 
