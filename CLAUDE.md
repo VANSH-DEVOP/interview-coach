@@ -94,6 +94,18 @@ The ordering in `ResumeService._index` is deliberate: **save chunks, then embed,
 
 ChromaDB persists to `CHROMA_PATH` (default `/var/lib/interviewpilot/chroma`, backed by the `chroma_data` Docker volume). `get_rag_service()` is `@lru_cache`d, so tests that vary settings must call `get_rag_service.cache_clear()`. Outside Docker that default path is usually unwritable — RAG then logs a warning and disables itself, so set `CHROMA_PATH` to something local when running the backend directly.
 
+### The vector store
+
+`ChromaVectorStore` drives **`langchain_chroma.Chroma`** over a shared `chromadb` client. Only the transport moved: `add_resume` / `retrieve_relevant` → `RetrievalResult` / `delete_resume` is what `RAGService`, `HybridRetriever` and the benchmark are written against, so the swap is contained to `vector_store.py`. `EnsembleRetriever` was deliberately **not** taken — it lives in `langchain` proper and arrives with langgraph and three of its packages, to replace `fuse()`.
+
+Three things there that look like details and are not:
+
+- **`retrieve_relevant` returns cosine distances, ascending — lower is better.** It gets them from `similarity_search_by_vector_with_relevance_scores`, whose name is a misnomer: it hands back Chroma's `distances` untouched (its own docstring says "lower score represents more similarity"), and only a `relevance_score_fn`, which is not configured, would invert them. This matters because `RAG_MAX_DISTANCE` is a strict `<` in distance space, so a value flipped to a similarity keeps precisely the chunks the cutoff exists to drop, with no error anywhere. `tests/test_vector_store.py` and two benchmark tests fail on the inversion.
+- **Embeddings are computed upstream and carried in by `_PrecomputedEmbeddings`.** `Chroma.add_texts` has no parameter for precomputed vectors — it only calls `self._embedding_function.embed_documents(texts)` — but binding an embedding function to a process-wide store would freeze one user's redactor into everybody's indexing. The courier is constructed per call, computes nothing and redacts nothing, so redaction stays in `EmbeddingService` where `masking.py` put it. Its `embed_query` **raises**: embedding there would be a provider call outside redaction, outside the cache, against 20 requests/day.
+- **`delete_resume` filters on metadata, not on an id range**, because a re-chunk can produce fewer pieces — the same trap `replace_for_resume` avoids on the row side. It also swallows its exceptions by design, so only a read-back proves the filter matched anything; that is what `tests/test_vector_store.py` is for.
+
+`add_texts` upserts, where the raw `collection.add` it replaced errored on a duplicate id, so re-indexing a resume now overwrites in place.
+
 ### Retrieval observability
 
 Retrieval degrades more quietly than anything else here: off, empty, or broken, generation falls back to `resume_text[:4000]` and produces plausible questions anyway — the interview works, it is just no longer personalised. `degradation.py` does **not** count these; none of them are provider failures.

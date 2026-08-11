@@ -31,6 +31,13 @@ dependencies = [
     # under this project twice, and an integration package absorbs that class
     # of change instead of it being ours to find.
     "langchain-google-genai>=4.0",
+    # The vector store transport. Still not `langchain` itself -- this is a
+    # single package on top of chromadb, where `EnsembleRetriever` would have
+    # pulled in langgraph and three of its packages to replace forty tested
+    # lines of rank fusion. Fusion, the distance cutoff and the retrieval
+    # metrics stay ours; see app/services/ai/vector_store.py for why the
+    # embeddings do too.
+    "langchain-chroma>=1.1",
 ]
 
 [project.optional-dependencies]
