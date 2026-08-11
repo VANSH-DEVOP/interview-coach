@@ -133,7 +133,12 @@ Scaffolding exists; the feature does not.
   boto3 in a thread rather than aioboto3 — aiobotocore pins botocore narrowly, and `asyncio.to_thread` is already how `local.py` handles I/O.
   Verified end to end: factory → S3StorageService → MinIO, with the round-tripped PDF fed back through `ResumeParser` to prove the bytes survive.
 - [ ] **Streaming responses** for question generation and evaluation. Cheaper than it was: `ChatGoogleGenerativeAI` gives `.astream()` for free now that the transport is LangChain's. The work is the seam — `generate_json()` returns parsed JSON, and a streaming caller wants tokens, so `base.py` needs a second method rather than a changed one.
-- [ ] **Multi-provider models** (Claude, GPT) behind the existing seams. Also cheaper post-LangChain: a different `Chat*` class in `gemini_client.py::_model_client`, plus a setting. The redaction boundary and `GeminiError` contract stay put.
+- [x] ~~**Multi-provider models** (Claude, GPT) behind the existing seams.~~ ✅ 2026-08-11 — `AI_PROVIDER` = gemini | anthropic | openai, in `app/services/ai/providers.py`.
+  **Three values, many more services:** Groq, Ollama, OpenRouter, Together and vLLM all speak the OpenAI API, so they are `openai` + `AI_BASE_URL` rather than five packages — the same shape as the storage backend. Ollama makes a fully local, zero-cost provider one `pip install` and one setting away, which matters against a 20-requests-a-day ceiling.
+  **The real work was JSON, not selection.** Anthropic has no JSON mode, and every caller above the transport expects parsed JSON, so `extract_json` handles fenced and prose-wrapped replies with a string-aware bracket scan. It does not *repair* malformed JSON — guessing could silently change a score.
+  Verified by driving the real `ModelClient` at a local OpenAI-compatible server: reply parsed, **redaction held across the swap**, token telemetry still recorded.
+  The transport was renamed `ModelClient`/`ModelError` first, in its own commit.
+  **Embeddings stay on Gemini** — Chroma collections are fixed-dimension, so swapping raises rather than degrades. The fix (collection name keyed on the embedding model, plus a re-index) is written up in `config.py` as the natural follow-up.
 - [ ] **Voice interviews** (speech-to-text answers) — would give `duration_seconds` a real purpose.
 
 ### Closed rather than done — decided against, with the reason

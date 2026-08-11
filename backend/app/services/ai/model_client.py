@@ -1,11 +1,15 @@
-"""Async client for Google Gemini, over LangChain's integration.
+"""Async chat client, over LangChain's provider integrations.
 
-The transport is `ChatGoogleGenerativeAI`; everything around it is unchanged
-from the hand-written httpx version this replaces. That is the point of the
-shape: the seam callers use -- `generate_json(system_instruction=..., prompt=...)`
-returning parsed JSON and raising `ModelError` -- is identical, so the
-generator, the evaluator, the fallback layer and every test above this line
-neither changed nor noticed.
+Which provider it talks to is `AI_PROVIDER` -- Gemini, Anthropic, or anything
+speaking the OpenAI API (Groq, Ollama, OpenRouter, vLLM) via `AI_BASE_URL`. The
+choosing lives in `providers.py`; this module owns the seam around it.
+
+That seam -- `generate_json(system_instruction=..., prompt=...)` returning
+parsed JSON and raising `ModelError` -- has not changed through two transport
+rewrites now, first from hand-written httpx to LangChain and now from one
+provider to any. The generator, the evaluator, the fallback layer and every
+test above this line neither changed nor noticed, which is the whole return on
+keeping a wrapper that "only forwards".
 
 **Why hand the transport over.** Google has retired a model ID under this
 project twice, once silently for weeks, and each time the fix was ours to find.
@@ -23,12 +27,12 @@ every one of them.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
 from app.services.ai import call_metrics
 from app.services.ai.masking import Redactor, default_redactor
+from app.services.ai.providers import Provider, build_chat_model, extract_json
 from app.services.ai.tracing import traced
 
 logger = logging.getLogger(__name__)
@@ -58,11 +62,15 @@ class ModelClient:
         api_key: str,
         model: str,
         *,
+        provider: Provider = "gemini",
+        base_url: str | None = None,
         timeout: float = 30.0,
         redactor: Redactor | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
+        self._provider: Provider = provider
+        self._base_url = base_url
         self._timeout = timeout
         # Defaulting to the pattern-only redactor rather than to None means a
         # caller that does not know whose data this is still cannot send an
@@ -73,22 +81,19 @@ class ModelClient:
     def _model_client(self) -> Any:
         """Build the chat model once, on first use.
 
-        Imported lazily and cached on the instance: the integration pulls in
-        google-genai and its auth stack, and this class is only constructed
-        when an API key exists, so an app running on the deterministic
-        fallbacks never pays for the import.
+        Built lazily and cached on the instance: each integration pulls in its
+        own SDK and auth stack, and this class is only constructed when an API
+        key exists, so an app running on the deterministic fallbacks never pays
+        for the import.
         """
         if self._chat is None:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-
-            self._chat = ChatGoogleGenerativeAI(
+            self._chat = build_chat_model(
+                provider=self._provider,
                 model=self._model,
                 api_key=self._api_key,
-                request_timeout=self._timeout,
+                timeout=self._timeout,
                 max_retries=_MAX_ATTEMPTS,
-                # The contract every caller relies on: the model replies with
-                # JSON, which is then parsed below.
-                response_mime_type="application/json",
+                base_url=self._base_url,
             )
         return self._chat
 
@@ -127,12 +132,16 @@ class ModelClient:
             # the fallback layer keys on it. Letting a provider-specific
             # exception through would change what callers must handle every
             # time the integration is upgraded.
-            raise ModelError(f"Gemini request failed: {exc}") from exc
+            raise ModelError(f"{self._provider} request failed: {exc}") from exc
 
         try:
-            return json.loads(_text_of(reply))
-        except (json.JSONDecodeError, ValueError, TypeError) as exc:
-            raise ModelError(f"Unexpected Gemini response shape: {exc}") from exc
+            # Not `json.loads`: Anthropic has no JSON mode, so its reply may
+            # arrive fenced or with a sentence around it. See providers.py.
+            return extract_json(_text_of(reply))
+        except (ValueError, TypeError) as exc:
+            raise ModelError(
+                f"Unexpected {self._provider} response shape: {exc}"
+            ) from exc
 
 
 def _text_of(reply: Any) -> str:

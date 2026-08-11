@@ -225,6 +225,7 @@ go deeper; `CLAUDE.md` records why each decision was made.
 | **Redaction** | `ai/masking.py` | At the two network boundaries, so a call site cannot forget. See §7. |
 | **Prompt-injection defence** | `ai/untrusted.py` | Resume text and answers are fenced with a per-prompt random nonce. Structural, not phrase matching. |
 | **Object storage** | `services/storage/` | `local` or `s3`. The `s3` backend covers AWS S3, Cloudflare R2, MinIO and Backblaze B2 — same API, different `S3_ENDPOINT_URL`. Tested against MinIO, which needs no account. |
+| **Chat provider** | `ai/providers.py` | `AI_PROVIDER` = gemini / anthropic / openai. The last also covers Groq, Ollama, OpenRouter and vLLM via `AI_BASE_URL`. Anthropic has no JSON mode, so replies are unfenced and extracted rather than assumed. Embeddings stay on Gemini — see `config.py` for why. |
 | **Observability** | `ai/degradation.py`, `ai/call_metrics.py`, `ai/retrieval_metrics.py`, `ai/tracing.py` | Fallback rate, provider latency and token spend, retrieval outcomes; optional LangSmith tracing and Sentry reporting, both off by default and both scrubbed. |
 
 **LangChain is used for the provider transport and the vector store only** —
@@ -239,7 +240,6 @@ The reasoning, and the conditions that would reopen either, are in `goals.md`.
 | Integration | Seam | What changes |
 |---|---|---|
 | **Streaming responses** | `ai/base.py` needs a second method; `generate_json()` returns parsed JSON and a streaming caller wants tokens | `.astream()` comes free with the LangChain transport |
-| **Multi-provider** (Claude, GPT) | A different `Chat*` class in `gemini_client.py::_model_client`, plus a setting | The redaction boundary and the error contract stay put |
 
 ## 7. Security Notes
 

@@ -346,11 +346,17 @@ def get_evaluator(redactor: "Redactor | None" = None) -> Evaluator:
     from app.core.config import get_settings
 
     settings = get_settings()
-    if settings.GEMINI_API_KEY:
+    # Provider-neutral: AI_API_KEY when set, GEMINI_API_KEY otherwise, so
+    # "is AI configured" stays one question however AI_PROVIDER is set.
+    if settings.ai_api_key:
         from app.services.ai.model_client import ModelClient
 
         client = ModelClient(
-            settings.GEMINI_API_KEY, settings.GEMINI_MODEL, redactor=redactor
+            settings.ai_api_key or "",
+            settings.ai_model,
+            provider=settings.AI_PROVIDER,
+            base_url=settings.AI_BASE_URL,
+            redactor=redactor,
         )
         return FallbackEvaluator(GeminiEvaluator(client), HeuristicEvaluator())
     return HeuristicEvaluator()

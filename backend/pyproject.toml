@@ -58,6 +58,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Chat providers, one package each. Optional because a deployment runs one of
+# them: AI_PROVIDER=gemini is the default and needs nothing extra.
+#
+# `openai` covers more than OpenAI -- Groq, Ollama, OpenRouter, Together and
+# vLLM all speak that API, and are reached with AI_BASE_URL rather than another
+# package. Ollama in particular makes a fully local, zero-cost provider a
+# `pip install` and one setting away.
+anthropic = ["langchain-anthropic>=0.3"]
+openai = ["langchain-openai>=0.3"]
+
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -100,6 +110,15 @@ select = ["E4", "E7", "E9", "F", "I"]
 # would add a large dependency to type four calls.
 [[tool.mypy.overrides]]
 module = ["boto3", "boto3.*", "botocore", "botocore.*"]
+ignore_missing_imports = true
+
+# Optional provider extras. Not installed by default -- a Gemini deployment
+# should not carry the Anthropic and OpenAI SDKs -- so mypy cannot see them.
+# `providers.py` imports each inside its own branch and turns the ImportError
+# into a sentence naming the package to install, which is the behaviour these
+# are meant to have.
+[[tool.mypy.overrides]]
+module = ["langchain_anthropic", "langchain_anthropic.*", "langchain_openai", "langchain_openai.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

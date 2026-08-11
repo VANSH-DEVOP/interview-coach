@@ -103,7 +103,21 @@ Two rules that took a bug each to get right:
 
 **Not a guarantee**, and the gap is named in the module: log messages and exception strings are reported as written, because scrubbing them deletes the diagnosis. Almost all are format strings from this repo with an id interpolated. The rule when adding an `except` is the one `masking.py` already states — log the tally, the id or the type, never the text.
 
-`FallbackQuestionGenerator` / `FallbackEvaluator` wrap the primary and catch *any* exception. `GeminiClient` (`gemini_client.py`) and `EmbeddingService` call the provider through **LangChain's `langchain-google-genai` integration**, and raise `GeminiError` / `EmbeddingError` on any failure.
+`FallbackQuestionGenerator` / `FallbackEvaluator` wrap the primary and catch *any* exception. `ModelClient` (`model_client.py`) and `EmbeddingService` call the provider through LangChain integrations and raise `ModelError` / `EmbeddingError` on any failure.
+
+### Multi-provider chat
+
+`AI_PROVIDER` picks the chat provider; `providers.py` owns the choosing. **Three values reach far more than three services**, the same way `STORAGE_BACKEND=s3` reaches four object stores: Groq, Ollama, OpenRouter, Together and vLLM all speak the OpenAI chat API, so they are `AI_PROVIDER=openai` plus `AI_BASE_URL` rather than five more packages. `anthropic` and `openai` are optional extras, imported inside their branch so a Gemini deployment never pays for them and a missing one names the package to install.
+
+**The hard part is not selection — it is JSON.** Gemini has `response_mime_type`, OpenAI has `response_format`, **Anthropic has neither**. Everything above the transport is written against parsed JSON, so `extract_json` tries the whole string, then a ``` fence, then the outermost bracket span. Its span scan counts brackets *and* tracks strings, because a brace inside a value (`"salary was {competitive}"`) would otherwise truncate the object at the wrong place.
+
+It deliberately does **not** repair malformed JSON — no trailing-comma or single-quote fixing. Guessing risks silently changing a score or a question, and a clean failure into the deterministic fallback beats a plausible wrong answer.
+
+Without that extraction, pointing `AI_PROVIDER` at Anthropic breaks generation on the first call *quietly*: `ModelError` is exactly what the fallback layer catches, so interviews still complete and are merely generic. `tests/test_providers.py` covers it, and drives the real `ModelClient` at a local OpenAI-compatible server — the path Groq and Ollama take — asserting the reply parses, **redaction still holds across the provider swap**, and token usage is still recorded.
+
+**Embeddings do not follow `AI_PROVIDER`.** A Chroma collection has fixed dimensionality and embedding models disagree about it (3072 vs 1536 vs 768), so switching does not degrade — it raises on the first query against an existing index. Making embeddings swappable means keying the collection name on the model so a switch starts a fresh index, plus re-embedding every resume against 20 requests/day. Worth doing; deliberately not bundled in.
+
+`GeminiQuestionGenerator` and `GeminiEvaluator` keep their names — 67 references, nearly all test churn, and unlike the transport they build prompts and parse JSON rather than owning the connection. A known naming wart, not a claim.
 
 **The seam is deliberately unchanged by that.** `generate_json(system_instruction=..., prompt=...) -> parsed JSON`, and the exception types, are what every caller and test above the client is written against — only the transport moved. Keep it that way: dissolving these wrappers into direct LangChain calls at each site would move the redaction guarantee to every one of them, and `masking.py` exists so a call site *cannot* forget.
 

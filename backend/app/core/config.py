@@ -110,6 +110,40 @@ class Settings(BaseSettings):
     # app falls back to deterministic local implementations (no key required).
     GEMINI_API_KEY: str | None = None
     GEMINI_MODEL: str = "gemini-flash-latest"
+
+    # Which chat provider generation and evaluation run against.
+    #
+    # Three values reach far more than three services, the same way
+    # STORAGE_BACKEND=s3 reaches four object stores: Groq, Ollama, OpenRouter,
+    # Together and vLLM all speak the OpenAI chat API, so they are
+    # AI_PROVIDER=openai with AI_BASE_URL pointed at them.
+    #
+    #   gemini     langchain-google-genai  (installed; the default)
+    #   anthropic  langchain-anthropic     (optional extra)
+    #   openai     langchain-openai        (optional extra)
+    #
+    # Embeddings do NOT follow this setting -- see GEMINI_EMBEDDING_MODEL.
+    AI_PROVIDER: Literal["gemini", "anthropic", "openai"] = "gemini"
+    # Model id for the chosen provider. Unset means GEMINI_MODEL, so a
+    # Gemini-only deployment configures nothing new.
+    AI_MODEL: str | None = None
+    # API key for the chosen provider. Unset falls back to GEMINI_API_KEY,
+    # which also keeps "is AI configured at all?" a single question everywhere.
+    AI_API_KEY: str | None = None
+    # OpenAI-compatible endpoints only. Unset means genuine OpenAI.
+    #   Groq    https://api.groq.com/openai/v1
+    #   Ollama  http://localhost:11434/v1
+    AI_BASE_URL: str | None = None
+
+    @property
+    def ai_api_key(self) -> str | None:
+        """The key for the active chat provider."""
+        return self.AI_API_KEY or self.GEMINI_API_KEY
+
+    @property
+    def ai_model(self) -> str:
+        """The model id for the active chat provider."""
+        return self.AI_MODEL or self.GEMINI_MODEL
     # Cosine distance beyond which a retrieved chunk is treated as unrelated
     # and dropped, rather than padding the prompt. Chroma's cosine distance
     # runs 0 (identical) to 2 (opposite), so 1.0 is "no better than orthogonal"
@@ -131,6 +165,15 @@ class Settings(BaseSettings):
     # Google retires model IDs, and a retired ID is a 404 that the fallback
     # layer hides. Keep these overridable so a rotation is an env change, and
     # check `GET /v1beta/models` for the key in use before changing a default.
+    #
+    # **Embeddings stay on Gemini regardless of AI_PROVIDER**, and that is a
+    # constraint rather than an oversight. A Chroma collection has a fixed
+    # dimensionality, and embedding models disagree about it -- 3072 here
+    # against 1536 or 768 elsewhere -- so switching provider mid-life does not
+    # degrade, it raises on the first query against an existing index. Making
+    # embeddings swappable means keying the collection name on the model so a
+    # switch starts a new index, and re-embedding every resume against a quota
+    # of twenty requests a day. Worth doing, deliberately not bundled in here.
     GEMINI_EMBEDDING_MODEL: str = "models/gemini-embedding-001"
 
     # -- Tracing (LangSmith) ---------------------------------------------------
