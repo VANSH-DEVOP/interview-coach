@@ -10,10 +10,39 @@ from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Where `.env` is looked for, resolved from this file rather than from the
+# working directory.
+#
+# `env_file=".env"` -- what this replaces -- is relative to the process CWD, so
+# `uvicorn app.main:app` from `backend/` read a different file than the same
+# command from the repository root, and finding *no* file was silent. The
+# symptom was the application starting cleanly on code defaults: no Gemini key,
+# Postgres on 5432, which is indistinguishable from a revoked key and a stopped
+# database.
+#
+# Both paths are absolute, so every entry point -- uvicorn, alembic, pytest, the
+# arq worker -- reads the same configuration from any directory. In the Docker
+# image only the backend directory is copied, so the repository-root path simply
+# does not exist there; a missing env file is ignored, and containers get their
+# configuration from the environment anyway.
+_BACKEND_DIR = Path(__file__).resolve().parents[2]
+_REPO_ROOT = _BACKEND_DIR.parent
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # Ordered least- to most-specific: later files win for keys they set,
+        # and earlier ones still supply the keys they do not.
+        #
+        # **The repository-root `.env` is the one to use.** It is what
+        # docker-compose reads too, so a value set there is true for both the
+        # containers and anything run on the host. `backend/.env` is supported
+        # for a backend-only override and is otherwise unnecessary -- and
+        # keeping POSTGRES_PORT in it is a trap now that compose publishes
+        # `${POSTGRES_PORT}`: the root file would decide which port is
+        # published while this one decided where the app looked for it, and the
+        # two would silently disagree.
+        env_file=(_REPO_ROOT / ".env", _BACKEND_DIR / ".env"),
         env_ignore_empty=True,
         extra="ignore",
     )

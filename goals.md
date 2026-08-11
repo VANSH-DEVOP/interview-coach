@@ -121,8 +121,10 @@ Scaffolding exists; the feature does not.
   Recorded at the transport, like redaction, so a new call site cannot forget. Embedding calls report no tokens (Google returns no usage), so token fields are null rather than zero.
 - [x] **Log level is too verbose.** Each AI call emits ~15 `httpcore` DEBUG lines (connect/TLS/request/response teardown) that bury the one line that matters. Pin third-party loggers (`httpcore`, `httpx`) to WARNING. → **Done** in `app/core/logging.py`.
 ### Config hygiene (P2)
-- [ ] **Postgres port is inconsistent** across docker-compose (**5434**), `.env.example` (**5433**), and the code default (**5432**).
-- [ ] **No `backend/.env`.** `Settings` loads `.env` relative to CWD, so running uvicorn from `backend/` silently uses code defaults (no Gemini key) — surprising, and it looks identical to a broken API key.
+- [x] ~~**Postgres port is inconsistent** across docker-compose (**5434**), `.env.example` (**5433**), and the code default (**5432**).~~ ✅ 2026-08-11 — one variable. Compose publishes `${POSTGRES_PORT:-5434}:5432`, `.env.example` says 5434, and containers keep `db:5432` because that is genuinely a different thing. 5433 matched nothing anywhere and was simply wrong.
+- [x] ~~**No `backend/.env`.** `Settings` loads `.env` relative to CWD, so running uvicorn from `backend/` silently uses code defaults (no Gemini key) — surprising, and it looks identical to a broken API key.~~ ✅ 2026-08-11 — fixed the cause rather than the symptom. `env_file` is now `(<repo>/.env, <repo>/backend/.env)`, both resolved from the module, so every entry point reads the same configuration from any working directory. Verified from the repo root, from `backend/`, and from `/tmp`.
+  The stated fix ("create `backend/.env`") would have papered over it: that file is gitignored, so a fresh clone has none and hits the same silent fallback. Note also that `backend/.env` *did* exist on the machine this was written on, which is why the problem looked dormant.
+  `tests/test_config.py` pins the paths absolute — a relative entry is the bug returning.
 ---
 ## Phase 4 — Roadmap (P2)
 - [ ] **S3 / R2 / MinIO storage.** `STORAGE_BACKEND` is typed `Literal["local"]` (`config.py:65`); the abstraction is ready, the impl isn't.

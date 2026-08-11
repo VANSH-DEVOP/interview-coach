@@ -7,6 +7,9 @@ name: interviewpilot
 x-backend-env: &backend-env
   ENVIRONMENT: ${ENVIRONMENT:-local}
   DEBUG: ${DEBUG:-true}
+  # Container-to-container, so always the port Postgres listens on inside its
+  # own network -- never the published one. POSTGRES_PORT in `.env` is the
+  # host-side value and deliberately does not apply here.
   POSTGRES_HOST: db
   POSTGRES_PORT: 5432
   POSTGRES_USER: ${POSTGRES_USER:-interviewpilot}
@@ -38,7 +41,11 @@ services:
       timeout: 5s
       retries: 10
     ports:
-      - "5434:5432"
+      # One variable for the published port and for what a host-side process
+      # (uvicorn, alembic, pytest run from a shell) connects to, so the two
+      # cannot disagree. They previously did: compose published 5434 while
+      # .env.example said 5433, which matched nothing at all.
+      - "${POSTGRES_PORT:-5434}:5432"
 
   redis:
     image: redis:7-alpine

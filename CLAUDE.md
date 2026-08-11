@@ -33,8 +33,9 @@ NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1 npm run dev
 
 ## Environment gotchas
 
-- `Settings` (`app/core/config.py`) loads `.env` **relative to the process CWD**. The only `.env` lives at the repo root, and there is no `backend/.env` — running `uvicorn` from `backend/` silently uses code defaults (no Gemini key, Postgres on 5432). Export vars, or create `backend/.env`, when running the backend outside Docker.
-- Postgres port differs per path: docker-compose publishes **5434**, `.env.example` says **5433**, the code default is **5432**. Check which one your DB is actually on.
+- **Put configuration in the repository-root `.env`.** `Settings` (`app/core/config.py`) reads `<repo>/.env` then `<repo>/backend/.env`, both resolved from the module rather than from the working directory, so uvicorn, alembic, pytest and the worker all see the same values from any directory. The root file is also the one docker-compose reads, so a value set there is true for containers and host processes alike. `backend/.env` still works as a backend-only override and is otherwise unnecessary.
+  - This replaced `env_file=".env"`, which resolved against the CWD: `uvicorn app.main:app` from `backend/` read a different file than the same command from the repo root, and finding *no* file was silent, because every setting has a default. The application started cleanly with no Gemini key and Postgres on 5432 — indistinguishable from a revoked key and a stopped database.
+- **`POSTGRES_PORT` is the host-side port, and it belongs in the root `.env` only.** Compose publishes `${POSTGRES_PORT:-5434}:5432`, so the same value decides what is published and where a host process looks. Containers reach Postgres at `db:5432` over the compose network and ignore it entirely. Setting it in `backend/.env` as well is a trap: the root file would choose the published port while the backend file chose where the app looked, and nothing reports the disagreement. (These previously said 5434, 5433 and 5432 in three different places.)
 - Every environment variable enters the app through `app/core/config.py`. No other module reads `os.environ`.
 
 ## Backend architecture
