@@ -21,6 +21,10 @@ dependencies = [
     "numpy>=1.24",
     "arq>=0.26",
     "aiosmtplib>=3.0",
+    # Tracing only. Deliberately the SDK on its own, not LangChain: its
+    # @traceable decorator works on plain functions, so the pipeline is traced
+    # as written rather than rewritten to be traceable.
+    "langsmith>=0.10",
 ]
 
 [project.optional-dependencies]

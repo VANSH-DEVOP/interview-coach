@@ -16,6 +16,7 @@ from app.services.ai.base import GeneratedQuestion, InterviewSpec, QuestionGener
 from app.services.ai.gemini_client import GeminiClient
 from app.services.ai.pipeline import Critique, critique, extract_skills, trim_to_count
 from app.services.ai.query import rewrite_for_follow_up, rewrite_for_role
+from app.services.ai.tracing import traced
 from app.services.ai.untrusted import Fence
 
 if TYPE_CHECKING:
@@ -139,6 +140,7 @@ class GeminiQuestionGenerator(QuestionGenerator):
             return f"\nCandidate resume excerpt:\n{excerpt}", False
         return "", False
 
+    @traced("generate_questions")
     async def initial_questions(
         self,
         *,
@@ -317,6 +319,7 @@ class GeminiQuestionGenerator(QuestionGenerator):
             questions = questions[: spec.question_count]
         return questions
 
+    @traced("generate_follow_up")
     async def follow_up(
         self,
         *,

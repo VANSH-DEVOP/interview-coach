@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from app.core.config import get_settings
 from app.services.ai import retrieval_metrics
+from app.services.ai.tracing import traced
 
 if TYPE_CHECKING:
     from app.models.resume_chunk import ResumeChunk
@@ -160,6 +161,7 @@ class HybridRetriever:
         )
         return "\n\n".join(candidate.text for candidate in fused)
 
+    @traced("retrieve", run_type="retriever")
     async def retrieve_scored(
         self,
         resume_id: uuid.UUID,

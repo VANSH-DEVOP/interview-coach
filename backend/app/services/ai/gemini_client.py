@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 
 from app.services.ai.masking import Redactor, default_redactor
+from app.services.ai.tracing import traced
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ class GeminiClient:
         # email address or a phone number; it only loses the name.
         self._redactor = redactor or default_redactor()
 
+    @traced("gemini.generate_json", run_type="llm")
     async def generate_json(
         self, *, system_instruction: str, prompt: str
     ) -> Any:

@@ -168,6 +168,16 @@ The free tier allows **20 requests per day for the whole account**, and indexing
 
 Deliberately **not** cached: generated question sets. Caching them would save one call per interview and make a candidate practising the same role twice get the identical interview, which trades the product for the quota. The cost is overwhelmingly in indexing, not generation.
 
+### Tracing (LangSmith)
+
+`retrieval_metrics` answers "how often does retrieval come back empty". It cannot answer "why was *this* interview's third question generic", because the log lines for one operation's rewrite, dense search, keyword search, fusion, prompt and parse aren't tied together. `app/services/ai/tracing.py` gives that: `@traced(...)` spans on `initial_questions`, `follow_up`, `retrieve_scored`, `evaluate`, and the two provider calls, forming one span tree per operation.
+
+**LangSmith's SDK only — not LangChain.** `@traceable` works on plain functions, so the pipeline is traced as written rather than rewritten to be traceable.
+
+**Content is not traced by default**, and that's the load-bearing decision. A trace's payload is the prompt and the retrieved chunks; the prompt contains resume text and the chunks come from Chroma, which holds the resume *unredacted* on purpose ("Chroma is ours; Google is not"). Shipping those to a hosted service hands a third party exactly what `masking.py` withholds, silently — nobody reviews a trace the way they review a request. The default records shape instead: string lengths, container sizes, counts, timings, exceptions. `LANGSMITH_TRACE_CONTENT=true` opts into full payloads for local or self-hosted use.
+
+With tracing off, `traced` returns the function **untouched** — not a wrapper that no-ops, the original object — so the default configuration costs nothing and has no extra frame to reason about in production.
+
 ### Question generation is a chain
 
 `initial_questions` runs extract → generate → critique → refine (`app/services/ai/pipeline.py`). **Only `generate` always costs a provider call**, and that is the whole design: at 20 requests/day for the account, a model call per step would take the deployment from ~6 interviews a day to ~2.

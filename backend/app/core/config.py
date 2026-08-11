@@ -104,6 +104,26 @@ class Settings(BaseSettings):
     # check `GET /v1beta/models` for the key in use before changing a default.
     GEMINI_EMBEDDING_MODEL: str = "models/gemini-embedding-001"
 
+    # -- Tracing (LangSmith) ---------------------------------------------------
+    # Off by default. `retrieval_metrics` says how often retrieval comes back
+    # empty; tracing says why *this* interview's questions were poor, by tying
+    # one operation's rewrite, retrieval, fusion, prompt and parse into one span
+    # tree with timings and errors attached to the step that produced them.
+    LANGSMITH_TRACING: bool = False
+    LANGSMITH_API_KEY: str | None = None
+    LANGSMITH_PROJECT: str = "interviewpilot"
+    # Self-hosted instances only; unset uses LangSmith's cloud.
+    LANGSMITH_ENDPOINT: str | None = None
+    # Whether traces carry the actual prompts and retrieved chunks.
+    #
+    # Off by default because a trace's payload is resume text: the prompt
+    # contains it, and the retrieved chunks come from Chroma, which holds the
+    # resume *unredacted* on purpose. Turning this on ships to the tracing
+    # service exactly what app/services/ai/masking.py exists to withhold, and
+    # does it silently, since nobody reviews a trace the way they review a
+    # request. Reasonable for local debugging or a self-hosted endpoint.
+    LANGSMITH_TRACE_CONTENT: bool = False
+
     # -- Vector store (RAG) -----------------------------------------------------
     # Must point at durable storage. On a throwaway path (/tmp, a container
     # layer) the resume index is lost on restart and RAG silently degrades to

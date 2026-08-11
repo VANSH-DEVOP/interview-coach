@@ -13,6 +13,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from app.services.ai.degradation import record_fallback
+from app.services.ai.tracing import traced
 from app.services.ai.untrusted import Fence
 
 if TYPE_CHECKING:
@@ -218,6 +219,7 @@ class GeminiEvaluator(Evaluator):
     def __init__(self, client: Any) -> None:
         self._client = client
 
+    @traced("evaluate_interview")
     async def evaluate(
         self, *, target_role: str | None, transcript: list[QAPair]
     ) -> EvaluationResult:

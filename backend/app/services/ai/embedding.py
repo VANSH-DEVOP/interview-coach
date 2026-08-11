@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from app.services.ai.masking import Redactor, default_redactor
+from app.services.ai.tracing import traced
 
 if TYPE_CHECKING:
     from app.services.ai.embedding_cache import EmbeddingCache
@@ -82,6 +83,7 @@ class EmbeddingService:
             await self._cache.set(redacted, embedding)
         return embedding
 
+    @traced("gemini.embed", run_type="llm")
     async def _embed_uncached(self, redacted: str) -> list[float]:
         """The provider call itself. Takes already-redacted text."""
         url = f"{_BASE_URL}/{self._model}:embedContent"
