@@ -86,7 +86,7 @@ Scaffolding exists; the feature does not.
 ### Security (P1)
 - [x] **Rate limiting.** (`66252e9`) **Pulled forward into Phase 1** — the free tier turned out to be **20 requests/day**, not 60/min, and live verification exhausted it. `app/core/rate_limit.py` (fixed-window, no new dependency); auth keyed by IP, AI/upload keyed by user; 429 in the standard envelope with `Retry-After`. Per-process and burst-tolerant at window boundaries — both documented in the module.
   - [ ] **Follow-up:** the defaults (20 AI req/user/hour) sit *above* the account's 20/day ceiling, so they bound one user's abuse but not account exhaustion. Lower them, or move off the free tier.
-  - [ ] **Follow-up:** move counters to Redis before running more than one worker.
+  - [x] **Follow-up:** ~~move counters to Redis before running more than one worker.~~ ✅ 2026-08-10 — shared counters when `REDIS_URL` is set, in-process otherwise, and the degradation is counted and surfaced at `/health`. See "Shared rate-limit counters" below.
 - [ ] **httpOnly cookie BFF for tokens.** Tokens currently live in JS-readable cookies (`api-client.ts:35`), flagged as MVP in the code itself.
 - [x] **The Gemini API key is written to the logs in cleartext.** `GeminiClient` passes the key as a `?key=` query param, and httpx logs the full URL at INFO — so every AI call prints the key (seen in the backend container logs on 2026-07-27). Send it as the `x-goog-api-key` header instead, and/or set `logging.getLogger("httpx").setLevel(WARNING)`. Rotate the key that has already been logged.
   → **Done** in both `GeminiClient` and `EmbeddingService`; httpx/httpcore pinned to WARNING. Verified: at root DEBUG the key no longer appears in captured logs.
@@ -94,7 +94,8 @@ Scaffolding exists; the feature does not.
 - [ ] **CSP + security headers.**
 - [ ] **Per-user quotas** on interview creation / resume uploads.
 ### Observability (P2)
-- [ ] Metrics + tracing (request logging is all there is: `app/middleware/request_logging.py`).
+- [x] ~~Tracing~~ ✅ 2026-08-11 — LangSmith, off by default, `app/services/ai/tracing.py`. Spans on `initial_questions`, `follow_up`, `retrieve_scored`, `evaluate` and the two provider calls. Records **shape, not content**, because a trace's payload is resume text; `LANGSMITH_TRACE_CONTENT=true` opts in.
+- [ ] **Metrics** — still nothing but request logging (`app/middleware/request_logging.py`) and the hand-rolled counters in `retrieval_metrics.py` / `degradation.py` / `rate_limit.py`, all readable only through `/health`. Nothing scrapes, aggregates or alerts on them.
 - [ ] Error reporting (Sentry or equivalent).
 - [ ] AI-call telemetry: latency, token spend, **fallback rate** — a non-zero fallback rate is the alert that would have caught the `gemini-1.5-flash` 404 on day one.
 - [x] **Log level is too verbose.** Each AI call emits ~15 `httpcore` DEBUG lines (connect/TLS/request/response teardown) that bury the one line that matters. Pin third-party loggers (`httpcore`, `httpx`) to WARNING. → **Done** in `app/core/logging.py`.
@@ -103,20 +104,70 @@ Scaffolding exists; the feature does not.
 - [ ] **No `backend/.env`.** `Settings` loads `.env` relative to CWD, so running uvicorn from `backend/` silently uses code defaults (no Gemini key) — surprising, and it looks identical to a broken API key.
 ---
 ## Phase 4 — Roadmap (P2)
-- [ ] **LangGraph orchestration** — multi-step chains (extract skills → generate → refine). Not even a dependency yet; the `QuestionGenerator` seam is ready for it.
 - [ ] **S3 / R2 / MinIO storage.** `STORAGE_BACKEND` is typed `Literal["local"]` (`config.py:65`); the abstraction is ready, the impl isn't.
-- [ ] **Streaming responses** for question generation and evaluation.
-- [ ] **Multi-provider models** (Claude, GPT) behind the existing seams.
-- [ ] **Embedding / question caching** for repeat roles and identical resumes.
-- [ ] **Semantic chunking** to replace the fixed-size chunker (`rag.py`).
+- [ ] **Streaming responses** for question generation and evaluation. Cheaper than it was: `ChatGoogleGenerativeAI` gives `.astream()` for free now that the transport is LangChain's. The work is the seam — `generate_json()` returns parsed JSON, and a streaming caller wants tokens, so `base.py` needs a second method rather than a changed one.
+- [ ] **Multi-provider models** (Claude, GPT) behind the existing seams. Also cheaper post-LangChain: a different `Chat*` class in `gemini_client.py::_model_client`, plus a setting. The redaction boundary and `GeminiError` contract stay put.
 - [ ] **Voice interviews** (speech-to-text answers) — would give `duration_seconds` a real purpose.
+
+### Closed rather than done — decided against, with the reason
+
+Kept here so they are not re-proposed as gaps. Each was investigated, and the
+answer was "no" rather than "not yet".
+
+- ~~**`EnsembleRetriever` / the retrieval layer on LangChain**~~ — **not taken.**
+  `fuse()` is forty tested lines; reaching `EnsembleRetriever` installs
+  `langchain` proper and brings langgraph and three of its packages with it, and
+  the retrieval metrics do not survive inside it. Full reasoning, and the
+  condition that would reopen it, under "the retriever on LangChain" below.
+- ~~**LangGraph orchestration**~~ — **not needed.** Part 6 built the chain
+  (extract → generate → critique → refine) as plain functions and found there
+  was no graph to express: one always-taken provider call, one conditional
+  corrective call, no branching state and no cycles. Reconfirmed 2026-08-11
+  while investigating `EnsembleRetriever`, which would have dragged langgraph in
+  transitively — the framework arriving as a *side effect* of a retriever swap
+  is what settled it. Revisit only if a genuine cycle or human-in-the-loop step
+  appears.
+- ~~**Question caching**~~ — **rejected on the product, not the cost.** It saves
+  one call per interview, and makes a candidate practising the same role twice
+  get a byte-identical interview. The quota cost is overwhelmingly in *indexing*,
+  not generation, which is why the embedding cache was worth building and this
+  is not.
+- ~~**Embedding caching**~~ — ✅ done in Part 4. Keyed on `sha256` of the
+  *redacted* text plus the model, packed float32, failures counted separately
+  from misses.
+- ~~**Semantic chunking to replace the fixed-size chunker**~~ — **the premise
+  expired.** Part 2 replaced the fixed-size chunker with a structure-aware one
+  that splits on the resume's own section headings and packs paragraphs within a
+  section. An embedding-similarity chunker would cost one provider call per
+  candidate boundary against a 20/day ceiling, to replace a splitter that reads
+  the document's own declared structure. Revisit only off the free tier, and
+  only with the benchmark as the judge.
 ---
 ## Suggested order
-1. Phase 0 in full — RAG and the test suite are actively broken.
-2. Follow-up resume context + async evaluation (the two biggest AI-quality wins).
-3. CI with real API tests, plus a test database.
-4. Auth completeness (logout, rotation, password change).
-5. Progress-tracking dashboard — the largest gap between the README's promise and reality.
+
+~~1. Phase 0 in full. 2. Follow-up resume context + async evaluation. 3. CI with
+real API tests and a test database. 4. Auth completeness. 5. Progress-tracking
+dashboard.~~ — all five complete; superseded 2026-08-11.
+
+Current order. The split is deliberate: **nothing in the first group is a
+feature**, and all of it has to be true before anyone else can use this.
+
+1. **Rotate the Gemini API key.** Outstanding since 2026-07-27. The leak is
+   fixed (`e0e1ad6`); the leaked key is still live.
+2. **Lower the rate-limit defaults** below the account's 20/day, or move off the
+   free tier. Today they bound one user and not the account, which is the limit
+   that actually breaks.
+3. **SMTP credentials.** Production refuses `EMAIL_BACKEND=log`, so the first
+   production boot fails without them.
+4. **httpOnly cookie BFF.** The largest genuine security gap left, and the one
+   place the code itself admits it shipped an MVP (`api-client.ts:35`).
+5. **Error reporting (Sentry).** Also what the worker restart alarm needs — an
+   unhealthy worker is visible in `docker compose ps` and pages nobody.
+6. **AI-call telemetry** — fallback rate above all. A non-zero fallback rate is
+   the alert that would have caught the `gemini-1.5-flash` 404 on day one, and
+   the pipeline is *designed* to look healthy while degraded.
+7. Then the rest: CSP, per-user quotas, coverage threshold, dependency scanning,
+   config hygiene, `README.md`.
 ---
 ## Doc maintenance
 - [ ] **`README.md` is stale** — it still describes question generation, evaluation, and RAG as unfilled "seams". They ship. Its layering rules and setup instructions are still accurate.
@@ -160,7 +211,7 @@ ___
     would be redacted. Rare enough to accept.
   - Postgres and Chroma still store the resume in full. The control is about
     what crosses the network, not storage at rest.
-- [ ] **RAG implementation** it's too simple , like I want production level rag implementaion (hybrid-search , langchain, langgraph and all that neccessary items ) ideal pipeline:
+- [x] **RAG implementation** it's too simple , like I want production level rag implementaion (hybrid-search , langchain, langgraph and all that neccessary items ) ideal pipeline:
 User
   │
   ▼
@@ -188,10 +239,26 @@ MetricsCollector records
   ▼
 Response returned
 
-  → **Broken into six parts, 2026-08-10.** Part 1 done; the rest in order.
-  See "Production RAG — the plan" below. Note the pipeline sketched above is
-  mostly Parts 1 and 5 (timing, logging, metrics, caching) rather than
-  retrieval quality, which is Parts 2-3.
+  → **Broken into six parts, 2026-08-10. ✅ All six complete 2026-08-11**, plus
+  the LangChain provider layer, LangSmith tracing and the vector store on
+  `langchain-chroma`. See "Production RAG — the plan" below.
+
+  Two notes on how the ask was interpreted, because the answer diverged from the
+  request in both:
+
+  - **The pipeline sketched above is mostly Parts 1 and 5** — timing, logging,
+    metrics, caching — rather than *retrieval quality*, which is Parts 2-3 and
+    is where the measurable gains actually came from.
+  - **"langchain, langgraph and all that necessary items" was taken as a goal,
+    not a shopping list**, and two of the three were declined on measurement.
+    LangChain took the **provider layer** (Google has retired a model ID under
+    this project twice; an integration package absorbs that) and the **vector
+    store**. `EnsembleRetriever` and LangGraph were not taken: there is no graph
+    to express in a chain with one always-taken call and one conditional one,
+    and the generic retriever loses the distance cutoff, the deterministic tie
+    -breaking and the retrieval metrics while installing langgraph to replace
+    forty tested lines. Both are recorded under "Closed rather than done" with
+    the condition that would reopen them.
 
 - [x] **Query re-writing** the current pipeline doesn't check for any threats to the prompt injection we might need some query re-writing too.
   → **Done 2026-08-10** as part 5 of the RAG plan below. Note the two turned
@@ -233,31 +300,22 @@ Linters are now **pinned** (`ruff==0.16.2`, `mypy==2.1.0`) with an explicit
 `[tool.ruff.lint] select`. The first CI run failed on a rule local ruff did not
 have — an unpinned range guarantees CI and developers eventually disagree.
 
-## Suggested next step
-Phases 0, 1, and 3 (testing/CI) are closed as of 2026-08-08. The durable
-evaluation queue landed 2026-08-09.
+## What is closed, and where "next" lives
 
-Phase 2 (auth & account completeness) closed the same day.
+**→ The one current ordering is "Suggested order" above.** This section used to
+carry a second one; they drifted apart, so it is now a completion record only.
 
-What is left, roughly in order of value:
-PII masking closed 2026-08-09; see the Discovery section for what it does and
-what it deliberately does not.
+Closed, with the detail in the sections below:
 
-Stale-report reconciliation closed 2026-08-09. Token pruning, worker liveness
-and shared rate-limit counters closed 2026-08-10; the frontend's
-every-error-is-a-logout problem closed the same day. All are described below.
-
-1. ~~**LangChain provider layer + LangSmith tracing**~~ ✅ 2026-08-11. All six
-   RAG parts are done and the provider layer now runs through LangChain's
-   integration, traced by LangSmith. Next up is the observability backlog
-   proper (AI-call telemetry, error reporting) or the security items.
-2. **Observability** — AI-call telemetry (latency, token spend, fallback rate)
-   is the cheapest real win; the counters exist and `/health` already has the
-   shape for it. Error reporting is what the worker's missing restart alarm
-   needs.
-3. **Security** — CSP + headers, per-user quotas, the httpOnly cookie BFF.
-4. **Phase 4 roadmap** — multi-provider, streaming, S3/R2 storage.
-5. **Phase 3 leftovers** — no coverage threshold, no dependency scanning.
+- **Phases 0, 1 and 3 (testing/CI)** — 2026-08-08.
+- **Phase 2 (auth & account completeness)** — 2026-08-09.
+- **Durable evaluation queue**, **PII masking**, **stale-report reconciliation**
+  — 2026-08-09. Masking has a Discovery entry covering what it deliberately does
+  *not* do.
+- **Token pruning**, **worker liveness**, **shared rate-limit counters**, and the
+  frontend's every-error-is-a-logout problem — 2026-08-10.
+- **All six production-RAG parts**, the **LangChain provider layer**, **LangSmith
+  tracing**, and the **vector store on `langchain-chroma`** — 2026-08-11.
 
 ### Stale-report reconciliation — ✅ COMPLETE (2026-08-09)
 A Redis restart dropped the queued jobs and nothing ever moved the orphaned
@@ -719,10 +777,71 @@ requests. `max_retries=1` restores it: 78s → 0.89s, and the suite back to 107s
 
 The retriever was left alone, as planned. That remains a separate decision.
 
-## NEXT SESSION — the retrieval layer on LangChain (decide, then do)
-Raised 2026-08-11 and deliberately left whole rather than started at the end of
-a session. **Read the finding below before planning: the "easy half" of this is
-not easy, and the reason is structural rather than incidental.**
+## DONE — the vector store on `langchain-chroma` (2026-08-11)
+Option (b) below, taken as recommended: **`langchain-chroma` only.** `fuse()`,
+the distance cutoff, the retrieval metrics and the benchmark all stay ours.
+`EnsembleRetriever` was not taken and the reasoning against it stands unchanged
+— see "What was investigated and what it costs".
+
+The seam did not move: `add_resume` / `retrieve_relevant` → `RetrievalResult` /
+`delete_resume`, so `RAGService`, `HybridRetriever`, the metrics and the
+benchmark neither changed nor noticed. The whole swap is inside
+`app/services/ai/vector_store.py`.
+
+### Two corrections to what this file said before the work
+
+**1. `similarity_search_by_vector_with_relevance_scores` returns cosine
+distances, not relevance scores.** The warning below about inverting the cutoff
+described a hazard that does not exist on that method: it hands back
+`results["distances"]` from Chroma untouched, and its own docstring says "lower
+score represents more similarity". The name is the misnomer, not the value. No
+conversion is needed and none was written; a `relevance_score_fn` is the only
+thing that would invert them and none is configured.
+
+Verified rather than assumed, and it is now pinned: flipping the direction on
+purpose fails `test_chunks_come_back_ranked_by_ascending_distance` plus both
+benchmark tests that exist for the cutoff
+(`..._sharing_nothing_with_the_resume_retrieves_nothing`,
+`..._weakly_related_query_is_no_longer_padded_to_k`).
+
+**2. The per-user redactor never had to reach the store.** The three-way choice
+below assumed the store must embed, and so must carry a redactor. It does not:
+`add_resume` is *given* its vectors, already computed by `EmbeddingService` with
+the right redactor. What `Chroma.add_texts` needs is only a way to receive them,
+which is `_PrecomputedEmbeddings` — a courier, duck-typed against `Embeddings`,
+constructed per call and thrown away. It computes nothing, caches nothing and
+redacts nothing, so redaction stays exactly where `masking.py` put it and none
+of options (1)-(3) was needed.
+
+`embed_query` on that courier raises instead of embedding. A silent fallback
+there would be a provider call outside `EmbeddingService` — outside redaction,
+outside the embedding cache, against twenty requests a day.
+
+### What changed, and what it cost
+- `ChromaVectorStore` drives `langchain_chroma.Chroma` over a **shared**
+  `chromadb` client. The read/delete handle is built once; only indexing builds
+  a per-call handle, because only indexing needs a courier. With a client passed
+  in, construction is a `get_or_create_collection` lookup, not a database open.
+- Deletes go by metadata filter (`delete(ids=None, where=...)`, forwarded to
+  `collection.delete`), not by id range — a re-chunk can produce fewer pieces.
+- **One behaviour improved:** `add_texts` upserts where the raw `collection.add`
+  it replaces errored on an id it had already seen, so re-indexing a resume
+  overwrites in place.
+- `hnsw:search_ef=200`, `hnsw:space=cosine` and the per-test `collection_name`
+  all survive.
+- **New:** `tests/test_vector_store.py`, 11 tests. Nothing previously covered
+  this round trip, and both of its failure modes are silent — `delete_resume`
+  swallows its exceptions, and a distance read as a similarity raises nothing.
+
+Suite: **616 passed, zero skips** (Postgres + Redis), identical to before.
+Benchmark unmoved and reproducible across runs: lexical 1.00/1.00, semantic
+0.50/0.33, follow-up rewritten 1.00/1.00. `ruff` and `mypy` clean.
+
+## Closed rather than done — the retriever on LangChain (decided against 2026-08-11)
+Raised and settled the same day. The vector-store half above shipped; **this
+half was not taken**, and it is a decision rather than a backlog item — see
+"Recommendation, and what was chosen" for the condition that would reopen it.
+Read the rest before revisiting.
 
 ### What was investigated and what it costs
 `langchain-chroma` is a single package. `EnsembleRetriever` is not — it lives
@@ -732,7 +851,12 @@ three more. So the framework part 6 concluded had no graph to express would
 arrive as a transitive dependency, in order to replace `fuse()`: forty lines
 with tests.
 
-### The finding that changes the shape of this work
+### Superseded — the embedding-function finding
+Kept for the record; **corrected above and no longer the plan.** The premise —
+that a store which must embed must therefore carry a per-user redactor — was
+wrong, because the store never had to embed. `_PrecomputedEmbeddings` is what
+shipped, and none of the three options below was needed.
+
 **`Chroma.add_texts` cannot take precomputed embeddings.** Read the source: it
 obtains them only via `self._embedding_function.embed_documents(texts)`. Our
 vectors do not come from an embedding function bound to the store — they come
@@ -777,18 +901,24 @@ this pipeline has been bitten by repeatedly.
   and remember part 3: measurements without the distance cutoff are not
   reproducible.
 
-### Recommendation to weigh at the start of the session
+### Recommendation, and what was chosen
 The provider layer was worth moving because the ecosystem absorbs churn there
 and the local knowledge was thin. Retrieval is the opposite on both counts:
 nothing upstream breaks it, and the list above is what it knows. The honest
-options are (a) skip it and keep the hand-rolled retriever, (b) take
-`langchain-chroma` only, via the per-call wrapper, and keep `fuse()` and the
-metrics, or (c) the full migration including `EnsembleRetriever` and langgraph.
+options were (a) skip it and keep the hand-rolled retriever, (b) take
+`langchain-chroma` only and keep `fuse()` and the metrics, or (c) the full
+migration including `EnsembleRetriever` and langgraph.
 
-If (c), do it in this order and stay green at each step: vector store →
-verify masking boundary and cutoff direction → retriever → re-run the
-benchmark → rewire metrics. Do not start it late in a session; a half-migrated
-retriever is worse than either end state.
+**(b) was taken.** The vector store is the part where the integration is a
+single package and the local knowledge is thin; `fuse()` is the part where the
+package is langgraph and the local knowledge is the list above.
+
+Revisit (c) only if something changes the arithmetic — `langchain` shedding the
+langgraph dependency, or a second retrieval backend arriving and making a
+generic retriever interface worth its cost. If it is ever done, the order is:
+retriever → re-run the benchmark → rewire metrics onto callbacks, staying green
+at each step, and not late in a session; a half-migrated retriever is worse than
+either end state.
 
 ## Superseded plan — LangChain (provider layer) + LangSmith (2026-08-11)
 Decided 2026-08-10. Supersedes the "hand-rolled, revisit at part 6" decision
