@@ -193,7 +193,9 @@ feature**, and all of it has to be true before anyone else can use this.
    config hygiene, `README.md`.
 ---
 ## Doc maintenance
-- [ ] **`README.md` is stale** — it still describes question generation, evaluation, and RAG as unfilled "seams". They ship. Its layering rules and setup instructions are still accurate.
+- [x] ~~**`README.md` is stale** — it still describes question generation, evaluation, and RAG as unfilled "seams". They ship.~~ ✅ 2026-08-11 — rewritten against the tree rather than from memory: counts (9 models, 17 AI modules, 7 migrations, 54 test files) were taken from the repository and re-checked by a script, not guessed.
+  Beyond the "seams" claim, the stale parts were: a capability table saying interviews used static questions and reports were stubs, "CI (to be added)", a hardening backlog listing CSP and token pruning that both shipped, a folder tree naming one migration and two test files, and `middleware.ts` at the root — where it was, and where Next never loaded it from.
+  §6 now says what the AI pipeline *is*, records that LangChain is used for the provider transport and vector store only, and keeps a "still open" table for object storage, streaming and multi-provider.
 - [ ] Keep `CLAUDE.md`, `backend/AI_INTEGRATION.md`, and `backend/RAG_IMPLEMENTATION.md` in sync as these land.
 ___
 ## Discovery 
