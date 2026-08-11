@@ -84,6 +84,24 @@ Two nulls that are not zeros, for the same reason as `cache_errors` vs `cache_mi
 
 An operation is not a call: one `initial_questions` may spend two provider calls (generate, then a corrective refine) and is still one thing that either worked or came back generic. That is why `attempts` is counted at the wrappers and `calls` at the transport, and why the two rates differ.
 
+### Error reporting (Sentry)
+
+`app/core/error_reporting.py`. Off until `SENTRY_DSN` is set. Configured in both processes — `app/main.py`'s lifespan and `app/worker.py`'s `startup` — because they are separate processes and the worker is where an unreported failure costs most: nobody is watching a response when a cron job dies.
+
+**Where it is wired in is the decision, not that it exists.** This application has **42 `except Exception` blocks**, by design — an interview must always be completable, so every AI path, the queue, the cache and the rate limiter catch everything and carry on. A reporter attached only to the ASGI middleware would therefore be nearly silent: it would see the few faults that escape a system built so faults do not escape, and miss every one the fallbacks absorb. It would be quietest exactly when things are worst. So there are two routes in:
+
+- **Log records at ERROR and above become events** (`LoggingIntegration(event_level=ERROR)`), because most of those 42 blocks already log at that level before swallowing. Coverage comes free and stays correct when someone adds the forty-third. INFO stays breadcrumbs — otherwise every `rag.retrieval` trace becomes an issue.
+- **`report()` from `record_fallback()`**, the choke point every AI degradation passes through. At **warning**, not error: one fallback is the system working. Fingerprinted by `(operation, exception type)`, so a quota-exhausted afternoon is one issue saying "429, three hundred times" rather than three hundred pages.
+
+**Content is scrubbed, and `SENTRY_SEND_CONTENT=false` is load-bearing.** Sentry's defaults capture request bodies and every local variable in every frame — which here is `prompt`, `resume_text`, `transcript`, `answer` at exactly the moment they matter. `include_local_variables` and `max_request_body_size` are switched off at init, and `_before_send` strips frame vars, request body, cookies and query string (which has carried an API key here before) as a second layer. `tests/test_error_reporting.py` asserts on the event the real SDK builds, through a fake transport, not on the kwargs passed to `init` — a setting some integration re-enables would satisfy a config test and leak resume text in production.
+
+Two rules that took a bug each to get right:
+
+- **The scrubber keys off names but never redacts numbers.** `chunks: 3` is a count, not a chunk; redacting it throws away the diagnosis to protect an integer, and those counters are most of what a report is for. The key's name only decides the fate of things that could hold text.
+- **`tags` and `contexts` are not scrubbed, only `extra`.** `extra` is the arbitrary bag the logging integration empties log-record fields into. Tags are short labels we set — scrubbing them turns `operation: initial_questions` into `<str 17 chars>` and protects nothing.
+
+**Not a guarantee**, and the gap is named in the module: log messages and exception strings are reported as written, because scrubbing them deletes the diagnosis. Almost all are format strings from this repo with an id interpolated. The rule when adding an `except` is the one `masking.py` already states — log the tally, the id or the type, never the text.
+
 `FallbackQuestionGenerator` / `FallbackEvaluator` wrap the primary and catch *any* exception. `GeminiClient` (`gemini_client.py`) and `EmbeddingService` call the provider through **LangChain's `langchain-google-genai` integration**, and raise `GeminiError` / `EmbeddingError` on any failure.
 
 **The seam is deliberately unchanged by that.** `generate_json(system_instruction=..., prompt=...) -> parsed JSON`, and the exception types, are what every caller and test above the client is written against — only the transport moved. Keep it that way: dissolving these wrappers into direct LangChain calls at each site would move the redaction guarantee to every one of them, and `masking.py` exists so a call site *cannot* forget.

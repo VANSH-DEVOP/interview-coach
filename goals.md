@@ -96,7 +96,10 @@ Scaffolding exists; the feature does not.
 ### Observability (P2)
 - [x] ~~Tracing~~ ✅ 2026-08-11 — LangSmith, off by default, `app/services/ai/tracing.py`. Spans on `initial_questions`, `follow_up`, `retrieve_scored`, `evaluate` and the two provider calls. Records **shape, not content**, because a trace's payload is resume text; `LANGSMITH_TRACE_CONTENT=true` opts in.
 - [ ] **Metrics** — still nothing but request logging (`app/middleware/request_logging.py`) and the hand-rolled counters in `retrieval_metrics.py` / `degradation.py` / `rate_limit.py`, all readable only through `/health`. Nothing scrapes, aggregates or alerts on them.
-- [ ] Error reporting (Sentry or equivalent).
+- [x] ~~Error reporting (Sentry or equivalent).~~ ✅ 2026-08-11 — `app/core/error_reporting.py`, off until `SENTRY_DSN` is set, configured in both the API and the worker.
+  The decision was **where to wire it**, not whether. This application has 42 `except Exception` blocks by design, so a reporter attached only to the ASGI middleware would be nearly silent — quietest exactly when things are worst. Two routes in: log records at ERROR and above become events (covering the swallow points, which already log there), and `report()` from `record_fallback()`, at *warning* and fingerprinted by (operation, exception type) so a quota storm is one issue rather than three hundred pages.
+  Content scrubbed by default, same call as `LANGSMITH_TRACE_CONTENT` and for a stronger reason: the locals at a crash here are `prompt`, `resume_text`, `transcript`, `answer`. Tested against the event the real SDK builds, through a fake transport.
+  **Does not close the worker restart alarm** — see below.
 - [x] ~~AI-call telemetry: latency, token spend, **fallback rate**~~ ✅ 2026-08-11 — `app/services/ai/call_metrics.py`, reported under `ai.calls` at `/health`, plus `attempts`/`fallback_rate` on the `ai` block itself.
   The gap was not the counting, it was the **denominator**: `degradation.py` counted fallbacks and nothing counted attempts, so no rate could be computed and a raw count cannot be alerted on. `record_attempt()` at the fallback wrappers fixes that.
   Two questions deliberately kept apart: `fallback_rate` is *user-visible degradation*, `calls.failure_rate` is *provider reachability*. A reply that arrives and fails to parse is a successful call and a fallback — collapsing them would hide "provider up, output garbage", which is what a changed response schema looks like.
@@ -371,6 +374,14 @@ The same cron is now the obvious home for the expired-token pruning below.
   healthcheck. See below. Still no *restart alarm*: an unhealthy container is
   visible in `docker compose ps` and nothing pages anyone, which needs the
   error-reporting item in Phase 3 rather than more code here.
+  → ⚠️ **Still open after error reporting landed (2026-08-11).** Sentry reports
+  exceptions, and a worker that has *died* raises nothing — it simply stops.
+  `/health` already knows (`worker.alive` false flips `status` to `degraded`),
+  and the container healthcheck already knows (`arq --check`). What is missing
+  is something that *polls* one of them and pages: an uptime check on `/health`,
+  a Sentry cron monitor with a check-in from the reconcile job, or a container
+  orchestrator with restart alerting. All three are deployment configuration
+  rather than code, which is why no amount of work in this repo closes it.
 
 ### Token pruning + worker liveness — ✅ COMPLETE (2026-08-09)
 Both hang off the `cron_jobs` list the reconciliation sweep introduced.

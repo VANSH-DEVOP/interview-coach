@@ -38,6 +38,9 @@ dependencies = [
     # metrics stay ours; see app/services/ai/vector_store.py for why the
     # embeddings do too.
     "langchain-chroma>=1.1",
+    # Error reporting. Off until SENTRY_DSN is set, and scrubbed hard when on:
+    # the locals at a crash here are the prompt, the resume and the transcript.
+    "sentry-sdk[fastapi]>=2.0",
 ]
 
 [project.optional-dependencies]

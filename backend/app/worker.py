@@ -25,6 +25,7 @@ from arq import cron
 from arq.connections import RedisSettings
 
 from app.core.config import get_settings
+from app.core.error_reporting import configure_error_reporting
 from app.core.logging import configure_logging
 from app.db.session import engine
 from app.services.evaluation_worker import evaluate, mark_failed, reconcile_stale_reports
@@ -105,6 +106,10 @@ async def prune_tokens(ctx: dict[str, Any]) -> None:
 
 async def startup(ctx: dict[str, Any]) -> None:
     configure_logging()
+    # A separate process, so it needs its own init -- the API's does not carry
+    # over. This is the process where an unreported failure is most costly:
+    # nobody is watching a response when a cron job dies.
+    configure_error_reporting()
     logger.info("Evaluation worker started.")
 
 

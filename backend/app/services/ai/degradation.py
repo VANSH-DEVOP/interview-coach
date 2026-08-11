@@ -20,6 +20,8 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from app.core.error_reporting import report
+
 logger = logging.getLogger(__name__)
 
 
@@ -73,6 +75,16 @@ def record_fallback(operation: str, error: BaseException) -> None:
         _state.last_error,
         exc_info=error,
     )
+
+    # The one choke point every AI degradation passes through, which is why the
+    # reporting call is here and not at each of the wrappers.
+    #
+    # Reported at *warning*, deliberately. One fallback is the system working as
+    # designed -- the interview completed, on the deterministic path -- so this
+    # is not a page. It is fingerprinted by operation and exception type, so a
+    # quota-exhausted afternoon arrives as one issue saying "429, three hundred
+    # times" rather than three hundred separate ones.
+    report(error, operation=operation, level="warning")
 
 
 def snapshot() -> dict[str, object]:

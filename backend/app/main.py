@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.core.config import get_settings
+from app.core.error_reporting import configure_error_reporting
 from app.core.logging import configure_logging
 from app.db.session import engine
 from app.middleware.error_handler import register_exception_handlers
@@ -46,6 +47,9 @@ async def _open_queue(app: FastAPI) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
+    # Before the queue: connecting to Redis is the first thing that can fail,
+    # and a reporter initialised after it would miss the failure it most wants.
+    configure_error_reporting()
     await _open_queue(app)
 
     # Only meaningful without a queue. With one, a PENDING or GENERATING report

@@ -124,6 +124,32 @@ class Settings(BaseSettings):
     # request. Reasonable for local debugging or a self-hosted endpoint.
     LANGSMITH_TRACE_CONTENT: bool = False
 
+    # -- Error reporting (Sentry) ----------------------------------------------
+    # Off until a DSN is set. The counters in degradation.py and call_metrics.py
+    # say how often something failed; this says what the traceback was.
+    #
+    # Wired at the *swallow points*, not just at the ASGI layer: this
+    # application has 42 `except Exception` blocks by design, so a reporter that
+    # only sees unhandled exceptions would be quietest exactly when things are
+    # worst. See app/core/error_reporting.py.
+    SENTRY_DSN: str | None = None
+    # Which build this is. Worth setting in any real deployment -- "since when"
+    # is the first question about a new error, and it is unanswerable without.
+    SENTRY_RELEASE: str | None = None
+    # Performance tracing. Off: the AI pipeline is already traced by LangSmith,
+    # which knows what a retrieval is, and a second tracer would double the
+    # vendors seeing this traffic for a worse picture of it.
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.0
+    # Whether crash reports carry request bodies and local variables.
+    #
+    # Off by default, for the same reason as LANGSMITH_TRACE_CONTENT and with
+    # more force: the locals at the point of a crash here are `prompt`,
+    # `resume_text`, `transcript` and `answer`. Turning this on ships a third
+    # party exactly what app/services/ai/masking.py exists to withhold, and does
+    # it silently, since nobody reviews a crash report the way they review a
+    # request. Reasonable only against a self-hosted Sentry.
+    SENTRY_SEND_CONTENT: bool = False
+
     # -- Vector store (RAG) -----------------------------------------------------
     # Must point at durable storage. On a throwaway path (/tmp, a container
     # layer) the resume index is lost on restart and RAG silently degrades to
