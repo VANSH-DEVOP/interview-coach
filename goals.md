@@ -127,7 +127,11 @@ Scaffolding exists; the feature does not.
   `tests/test_config.py` pins the paths absolute — a relative entry is the bug returning.
 ---
 ## Phase 4 — Roadmap (P2)
-- [ ] **S3 / R2 / MinIO storage.** `STORAGE_BACKEND` is typed `Literal["local"]` (`config.py:65`); the abstraction is ready, the impl isn't.
+- [x] ~~**S3 / R2 / MinIO storage.**~~ ✅ 2026-08-11 — `app/services/storage/s3.py`, `STORAGE_BACKEND=s3`.
+  **One implementation, not three.** S3, R2, MinIO and B2 share an API, so they differ by `S3_ENDPOINT_URL`, not by class. The old factory comment proposed three provider classes; that would have been three copies of one file differing by a hostname.
+  `tests/test_storage.py` became one contract parameterised over both providers rather than a second test file — the ABC exists so callers cannot tell them apart, and the edges where they *do* differ (missing object, idempotent delete, binary fidelity) are exactly what needed pinning. Runs against MinIO, which costs nothing: no account, no card, no network. CI runs it with `REQUIRE_TEST_S3=1`.
+  boto3 in a thread rather than aioboto3 — aiobotocore pins botocore narrowly, and `asyncio.to_thread` is already how `local.py` handles I/O.
+  Verified end to end: factory → S3StorageService → MinIO, with the round-tripped PDF fed back through `ResumeParser` to prove the bytes survive.
 - [ ] **Streaming responses** for question generation and evaluation. Cheaper than it was: `ChatGoogleGenerativeAI` gives `.astream()` for free now that the transport is LangChain's. The work is the seam — `generate_json()` returns parsed JSON, and a streaming caller wants tokens, so `base.py` needs a second method rather than a changed one.
 - [ ] **Multi-provider models** (Claude, GPT) behind the existing seams. Also cheaper post-LangChain: a different `Chat*` class in `gemini_client.py::_model_client`, plus a setting. The redaction boundary and `GeminiError` contract stay put.
 - [ ] **Voice interviews** (speech-to-text answers) — would give `duration_seconds` a real purpose.

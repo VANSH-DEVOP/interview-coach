@@ -47,6 +47,22 @@ jobs:
           --health-timeout 3s
           --health-retries 10
 
+      # The S3 provider's tests run against MinIO, which speaks the same API as
+      # AWS S3, Cloudflare R2 and Backblaze B2 -- so the provider is exercised
+      # for real, with no account and no credentials in CI.
+      minio:
+        image: minio/minio:edge-cicd
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
       POSTGRES_HOST: localhost
       POSTGRES_PORT: 5432
@@ -123,6 +139,7 @@ jobs:
         env:
           REQUIRE_TEST_DATABASE: "1"
           REQUIRE_TEST_REDIS: "1"
+          REQUIRE_TEST_S3: "1"
         # --cov is passed here rather than living in addopts: running a single
         # test file is the commonest local action, and measuring the whole
         # application from one file would report ~8% and fail the threshold

@@ -279,7 +279,17 @@ The quota check runs **before** `storage.save`, not after the row is built — a
 
 ## Storage
 
-`app/services/storage/` mirrors the same pattern: `StorageService` ABC, `LocalStorageService` impl, `get_storage_service()` factory keyed on `STORAGE_BACKEND`. Blobs live outside the code tree (`STORAGE_LOCAL_PATH`, a named Docker volume). Uploads use opaque keys `resumes/{user_id}/{uuid}.pdf`; the client filename is metadata only. Swapping to S3/R2 should touch this package only.
+`app/services/storage/` mirrors the same pattern: `StorageService` ABC, two implementations, `get_storage_service()` factory keyed on `STORAGE_BACKEND`. Blobs live outside the code tree (`STORAGE_LOCAL_PATH`, a named Docker volume). Uploads use opaque keys `resumes/{user_id}/{uuid}.pdf`; the client filename is metadata only.
+
+**Two backends, not four.** AWS S3, Cloudflare R2, MinIO and Backblaze B2 all speak the same API, so `STORAGE_BACKEND=s3` covers all of them and `S3_ENDPOINT_URL` picks which. The factory used to suggest registering `S3StorageService`, `R2StorageService` and `MinioStorageService` separately — that would have been three copies of one file differing by a hostname.
+
+- **boto3 in a thread, not aioboto3.** aiobotocore pins `botocore` narrowly and is a known resolver-conflict source; what it buys is true async I/O for a workload of 5 MiB files at low concurrency. `asyncio.to_thread` is what `local.py` already does for file I/O, so both providers have the same shape.
+- **The factory fails at boot when `S3_BUCKET` is missing**, not on the first upload — the same failure an hour later is much harder to attribute.
+- **`_validate` rejects `..` keys on S3 too.** There is no filesystem to escape there, so it is parity rather than a traversal guard: a key with `..` in it means something upstream is wrong, and the alternative is one provider raising while the other quietly stores an object literally named `../escape.pdf`.
+
+**`tests/test_storage.py` is one contract parameterised over both providers**, not two test files. The ABC's whole purpose is that `ResumeService` cannot tell them apart, and the places they naturally differ are exactly the edges: a missing object is `FileNotFoundError` on one side and an HTTP 404 with a provider-specific code on the other. Adding a third backend means adding a fixture, not a file.
+
+The S3 half runs against **MinIO** — same API as S3/R2/B2, no account, no card, no network. `docker compose --profile s3 up -d minio`. Same bargain as Postgres and Redis: skip when unreachable, `REQUIRE_TEST_S3=1` in CI turns that into a failure.
 
 ## Tests
 

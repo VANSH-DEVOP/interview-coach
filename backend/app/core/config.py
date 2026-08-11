@@ -264,12 +264,34 @@ class Settings(BaseSettings):
     FRONTEND_BASE_URL: str = "http://localhost:3000"
 
     # -- Storage ---------------------------------------------------------------
-    # "local" today; "s3" | "r2" | "minio" are future providers. The value is
-    # consumed only by the storage factory (app.services.storage).
-    STORAGE_BACKEND: Literal["local"] = "local"
+    # "local" or "s3". Consumed only by the storage factory
+    # (app.services.storage).
+    #
+    # There is no separate "r2" or "minio" value, and that is the point: AWS S3,
+    # Cloudflare R2, MinIO and Backblaze B2 all speak the same API, so they are
+    # one backend distinguished by S3_ENDPOINT_URL rather than three
+    # implementations differing by a hostname.
+    STORAGE_BACKEND: Literal["local", "s3"] = "local"
     # Lives OUTSIDE the application code directory by design.
     STORAGE_LOCAL_PATH: Path = Path("/var/lib/interviewpilot/storage")
     MAX_UPLOAD_SIZE_BYTES: int = 5 * 1024 * 1024  # 5 MiB
+    # -- S3-compatible storage (STORAGE_BACKEND=s3) ----------------------------
+    # Required when the backend is "s3"; validated at startup rather than on the
+    # first upload, so a misconfiguration is a boot failure and not a user's
+    # 502 an hour later.
+    S3_BUCKET: str | None = None
+    # Unset for real AWS. Set for anything else:
+    #   R2     https://<account-id>.r2.cloudflarestorage.com   (region "auto")
+    #   MinIO  http://localhost:9000
+    #   B2     https://s3.<region>.backblazeb2.com
+    S3_ENDPOINT_URL: str | None = None
+    S3_REGION: str | None = "auto"
+    # Left unset, boto3 falls back to its own credential chain -- environment,
+    # ~/.aws/credentials, or an instance role. That is the right behaviour on
+    # AWS, where an IAM role beats a key pair nobody has to rotate.
+    S3_ACCESS_KEY_ID: str | None = None
+    S3_SECRET_ACCESS_KEY: str | None = None
+
     ALLOWED_RESUME_CONTENT_TYPES: tuple[str, ...] = (
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
