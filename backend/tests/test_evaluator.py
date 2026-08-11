@@ -320,3 +320,94 @@ async def test_fallback_evaluator_recovers_from_model_client_error():
     )
     assert isinstance(result.overall_score, Decimal)
     assert bad_client.calls == 1
+
+
+# -- Pacing and provenance in the prompt -----------------------------------------
+
+
+class _CapturingClient:
+    """Records the prompt instead of calling a provider."""
+
+    def __init__(self) -> None:
+        self.prompt = ""
+
+    async def generate_json(self, *, system_instruction, prompt):
+        self.prompt = prompt
+        return {
+            "overall_score": 7,
+            "summary": "ok",
+            "strengths": ["a"],
+            "weaknesses": ["b"],
+            "recommendations": ["c"],
+            "per_question": [],
+        }
+
+
+async def test_the_prompt_carries_how_long_each_answer_took():
+    """`duration_seconds` has been captured since the first release and the
+    evaluator has never seen it, which is why pacing feedback was impossible."""
+    client = _CapturingClient()
+
+    await GeminiEvaluator(client).evaluate(
+        target_role="Backend",
+        transcript=[QAPair(question="Q", answer="A", duration_seconds=240)],
+    )
+
+    assert "answered in 240s" in client.prompt
+
+
+async def test_a_dictated_answer_is_labelled_as_such():
+    """So the model judges substance rather than marking the transcription:
+    speech has no punctuation and reads as run-on."""
+    client = _CapturingClient()
+
+    await GeminiEvaluator(client).evaluate(
+        target_role="Backend",
+        transcript=[QAPair(question="Q", answer="A", transcript_source="spoken")],
+    )
+
+    assert "dictated" in client.prompt
+    assert "ignore punctuation and run-on phrasing" in client.prompt
+
+
+async def test_a_missing_duration_adds_no_annotation_at_all():
+    """Not "(unknown time)": an empty marker invites the model to reason about a
+    number it does not have, and rows recorded before this existed are not slow
+    answers."""
+    client = _CapturingClient()
+
+    await GeminiEvaluator(client).evaluate(
+        target_role="Backend",
+        transcript=[QAPair(question="Q", answer="A")],
+    )
+
+    assert "answered in" not in client.prompt
+    assert "[" not in client.prompt.split("Evaluate this mock interview")[0]
+
+
+async def test_the_prompt_says_what_the_clock_measured():
+    """The number is time from seeing the question to submitting -- thinking
+    included. Telling the model "you spoke for four minutes" would be wrong."""
+    client = _CapturingClient()
+
+    await GeminiEvaluator(client).evaluate(
+        target_role="Backend",
+        transcript=[QAPair(question="Q", answer="A", duration_seconds=30)],
+    )
+
+    assert "thinking included, not time spent speaking" in client.prompt
+
+
+async def test_the_heuristic_evaluator_ignores_timing():
+    """It scores on coverage and word depth. Inventing a pacing rule without a
+    model behind it would be an arbitrary number dressed as judgement."""
+    fast = await HeuristicEvaluator().evaluate(
+        target_role="Backend",
+        transcript=[QAPair(question="Q", answer="A thorough answer here.", duration_seconds=5)],
+    )
+    slow = await HeuristicEvaluator().evaluate(
+        target_role="Backend",
+        transcript=[QAPair(question="Q", answer="A thorough answer here.", duration_seconds=900)],
+    )
+
+    assert fast.overall_score == slow.overall_score

@@ -108,6 +108,17 @@ def _as_str_list(value: Any) -> list[str]:
 class QAPair:
     question: str
     answer: str | None
+    # Seconds from the question being shown to the answer being submitted, so
+    # this is thinking-plus-answering time, not speaking time. The distinction
+    # matters in the prompt: "four minutes on this question" is fair comment,
+    # "you spoke for four minutes" would not be.
+    #
+    # None for answers recorded before this was captured, and for skipped ones.
+    duration_seconds: int | None = None
+    # "typed" or "spoken". Present so the model is not told to judge the
+    # fluency of prose that was dictated -- speech has no punctuation and
+    # reads as run-on, and penalising that would be marking the transcription.
+    transcript_source: str = "typed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +134,21 @@ class Evaluator(ABC):
     async def evaluate(
         self, *, target_role: str | None, transcript: list[QAPair]
     ) -> EvaluationResult: ...
+
+
+def _pacing(qa: QAPair) -> str:
+    """The annotation appended to a question line, or nothing at all.
+
+    Nothing, deliberately, when there is no duration: an empty marker like
+    "(unknown time)" invites the model to reason about a number it does not
+    have, and the older rows that lack one are not slow answers.
+    """
+    parts = []
+    if qa.duration_seconds is not None:
+        parts.append(f"answered in {qa.duration_seconds}s")
+    if qa.transcript_source == "spoken":
+        parts.append("dictated")
+    return f" [{', '.join(parts)}]" if parts else ""
 
 
 class HeuristicEvaluator(Evaluator):
@@ -231,7 +257,7 @@ class GeminiEvaluator(Evaluator):
         # be part of the transcript's structure.
         fence = Fence()
         lines = [
-            f"Q{i}: {qa.question}\nA{i}: "
+            f"Q{i}: {qa.question}{_pacing(qa)}\nA{i}: "
             + fence.wrap(qa.answer if qa.answer and qa.answer.strip() else "(no answer)")
             for i, qa in enumerate(transcript, start=1)
         ]
@@ -243,6 +269,13 @@ class GeminiEvaluator(Evaluator):
             '[{"question": str, "score": number, "feedback": str}]}. '
             '"summary" is a 2-3 sentence overall assessment of the candidate\'s '
             "performance, written directly to the candidate. "
+            "Where a question shows a time, it is the whole time from seeing it "
+            "to submitting -- thinking included, not time spent speaking -- so "
+            "comment on pacing only when it is clearly out of proportion to the "
+            "question, and never treat a missing time as fast or slow. "
+            "Where an answer is marked dictated, judge its substance and ignore "
+            "punctuation and run-on phrasing: those are artefacts of "
+            "transcription, not of the candidate. "
             'Each "per_question" entry needs its own 0-10 "score" for that '
             "answer alone. Score an unanswered question 0."
             f"\n\n{fence.instruction}"

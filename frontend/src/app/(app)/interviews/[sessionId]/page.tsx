@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { useDictation } from "@/hooks/use-dictation";
+import { useSpeech } from "@/hooks/use-speech";
 
 /** Seconds as m:ss, or plain seconds under a minute. */
 function formatDuration(seconds: number): string {
@@ -55,6 +56,9 @@ export default function InterviewSessionPage() {
       setDraft((previous) => (previous ? `${previous} ${text}` : text));
     }, []),
   );
+
+  // Local rendering only -- nothing leaves the browser, unlike dictation.
+  const speech = useSpeech();
   // True while replacing an answer that already exists, which switches the
   // submit from POST to PUT.
   const [isEditing, setIsEditing] = useState(false);
@@ -82,6 +86,13 @@ export default function InterviewSessionPage() {
 
   const questions = session?.questions ?? [];
   const activeQuestion: Question | undefined = questions[activeIndex];
+
+  // Moving to another question stops the voice. Without this it keeps reading a
+  // question that is no longer on screen.
+  const speechStop = speech.stop;
+  useEffect(() => {
+    speechStop();
+  }, [activeQuestion?.id, speechStop]);
   const answeredCount = useMemo(
     () => questions.filter((q) => q.answer !== null).length,
     [questions]
@@ -319,6 +330,22 @@ export default function InterviewSessionPage() {
             <CardDescription className="pt-2 text-base text-foreground">
               {activeQuestion.content}
             </CardDescription>
+            {speech.supported && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="mt-2 h-auto px-2 py-1 text-xs"
+                onClick={() =>
+                  speech.speaking ? speech.stop() : speech.speak(activeQuestion.content)
+                }
+                aria-label={
+                  speech.speaking ? "Stop reading the question" : "Read the question aloud"
+                }
+              >
+                {speech.speaking ? "Stop reading" : "Read aloud"}
+              </Button>
+            )}
           </CardHeader>
           <CardContent className="space-y-4">
             {activeQuestion.answer && !isEditing ? (

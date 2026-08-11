@@ -86,6 +86,12 @@ async def evaluate(session_id: uuid.UUID, user_id: uuid.UUID) -> None:
                 QAPair(
                     question=question.content,
                     answer=question.answer.content if question.answer else None,
+                    duration_seconds=(
+                        question.answer.duration_seconds if question.answer else None
+                    ),
+                    transcript_source=(
+                        question.answer.transcript_source if question.answer else "typed"
+                    ),
                 )
                 for question in session.questions
             ],

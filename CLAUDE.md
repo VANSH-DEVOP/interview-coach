@@ -298,7 +298,15 @@ Retrieval used to be issued `"skills and experience relevant to {role}"` (four f
 
 `Answer.transcript_source` (`typed` | `spoken`, migration `0008`) records which. It exists because the two are **not comparable text**: speech arrives as run-on, largely unpunctuated prose, and `HeuristicEvaluator` scores partly on word depth — so equal-quality answers need not score alike, and without the column there is no way to notice. A plain `String(16)` rather than a Postgres enum, because the set will grow (a server-side transcriber is a different provenance) and widening an enum needs a migration where widening this does not. `server_default='typed'` so existing rows state what they are instead of being null and ambiguous.
 
-**Still open:** `QAPair` carries only `question` and `answer`, so the evaluator has never seen `duration_seconds`. Voice is what makes pacing feedback worth giving — that is phase 2.
+**Reading questions aloud** (`use-speech.ts`) is a play button, not a mode: `speechSynthesis` renders **locally**, so unlike dictation nothing leaves the browser and there is no new boundary. It cancels before speaking (queueing is the platform default, so a second press would otherwise read both questions back to back) and stops on unmount and on question change — a voice reading a question that is no longer on screen is genuinely alarming.
+
+**Pacing feedback.** `QAPair` now carries `duration_seconds` and `transcript_source`, and the prompt annotates each question `[answered in 240s, dictated]`. Three things there are load-bearing:
+
+- **The prompt says what the clock measured** — time from seeing the question to submitting, *thinking included, not time spent speaking*. Telling a model "you spoke for four minutes" about a number that includes reading and thinking would be a confident falsehood.
+- **A missing duration adds no annotation at all**, not `(unknown time)`. An empty marker invites the model to reason about a number it does not have, and rows recorded before this existed are not slow answers.
+- **A dictated answer is labelled, and the prompt says to ignore punctuation and run-on phrasing** for it. Otherwise the model marks the transcription rather than the candidate.
+
+`HeuristicEvaluator` deliberately ignores timing: it scores on coverage and word depth, and inventing a pacing rule without a model behind it would be an arbitrary number dressed as judgement. There is a test that a 5-second and a 900-second answer score identically there.
 
 ## Rate limiting
 
