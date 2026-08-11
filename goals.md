@@ -247,8 +247,10 @@ Stale-report reconciliation closed 2026-08-09. Token pruning, worker liveness
 and shared rate-limit counters closed 2026-08-10; the frontend's
 every-error-is-a-logout problem closed the same day. All are described below.
 
-1. **LangChain provider layer + LangSmith tracing** — see "NEXT SESSION"
-   below. **All six RAG parts are now done**, so this is the next item.
+1. ~~**LangChain provider layer + LangSmith tracing**~~ ✅ 2026-08-11. All six
+   RAG parts are done and the provider layer now runs through LangChain's
+   integration, traced by LangSmith. Next up is the observability backlog
+   proper (AI-call telemetry, error reporting) or the security items.
 2. **Observability** — AI-call telemetry (latency, token spend, fallback rate)
    is the cheapest real win; the counters exist and `/health` already has the
    shape for it. Error reporting is what the worker's missing restart alarm
@@ -675,7 +677,49 @@ shape is visible — extract and critique are ordinary Python and refine is one
 `if`, so there is no graph to express. Revisit only if the chain gains real
 branching, checkpointing, or a human-in-the-loop pause.
 
-## NEXT SESSION — LangChain (provider layer) + LangSmith (2026-08-11)
+### LangChain provider layer + LangSmith ✅ COMPLETE (2026-08-11)
+Both steps done, in the planned order and green at each.
+
+**LangSmith first, on the code as it stands** (`0bde95d`). `@traceable` works on
+plain functions, so the pipeline is traced as written rather than rewritten in
+order to be traceable — which is why checking the claim was worth it before
+assuming the framework was required. Spans on `initial_questions`, `follow_up`,
+`retrieve_scored`, `evaluate` and both provider calls give one tree per
+operation.
+
+**Content is not traced by default.** A trace's payload is the prompt and the
+retrieved chunks; the prompt carries resume text and the chunks come from
+Chroma, which holds the resume unredacted on purpose. The default records shape
+— string lengths, container sizes, counts, timings, exceptions —
+and `LANGSMITH_TRACE_CONTENT=true` opts into the rest. With tracing off,
+`traced` returns the function untouched, so the default costs nothing.
+
+**Then the provider transport**, chat and embeddings, keeping every seam:
+`generate_json` / `embed_text` signatures, `GeminiError` / `EmbeddingError`,
+and redaction inside the client. Nothing above the client changed, which is why
+616 tests pass with only the two boundary-capture fixtures rewired.
+
+Every constraint the plan listed held, and each was checked rather than assumed:
+- Redaction still at the boundary — `test_masking_boundary.py` now intercepts
+  the chat model and the embeddings object instead of httpx, which is a better
+  test: it asserts on the messages handed to the provider.
+- The API key does not reach the logs at root DEBUG, verified for both
+  transports against the live API (both returned INVALID_ARGUMENT, so the calls
+  genuinely left the process).
+- The embedding cache still keys on redacted text; LangChain's
+  `CacheBackedEmbeddings`, which keys on the raw string, was not adopted.
+- `degradation.record_fallback` still fires, because the fallback wrappers are
+  untouched.
+
+**One regression found by measuring, not by reading.** The suite went from 106s
+to 201s after the swap. The integration retries six times by default where the
+httpx client failed once, so a dead provider took 78 seconds to surface instead
+of ~30 — and against a 20-a-day quota, one failing call quietly spent six
+requests. `max_retries=1` restores it: 78s → 0.89s, and the suite back to 107s.
+
+The retriever was left alone, as planned. That remains a separate decision.
+
+## Superseded plan — LangChain (provider layer) + LangSmith (2026-08-11)
 Decided 2026-08-10. Supersedes the "hand-rolled, revisit at part 6" decision
 for the **provider layer only**. Retrieval, chunking and metrics stay ours.
 

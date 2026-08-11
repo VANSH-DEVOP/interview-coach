@@ -1,14 +1,24 @@
-"""Thin async client for the Google Gemini REST API.
+"""Async client for Google Gemini, over LangChain's integration.
 
-Kept SDK-free (uses httpx) so the only new dependency is httpx, which the
-application already needs. The client returns parsed JSON from the model when
-asked, raising GeminiError on transport or contract failures so callers can
-fall back gracefully.
+The transport is `ChatGoogleGenerativeAI`; everything around it is unchanged
+from the hand-written httpx version this replaces. That is the point of the
+shape: the seam callers use -- `generate_json(system_instruction=..., prompt=...)`
+returning parsed JSON and raising `GeminiError` -- is identical, so the
+generator, the evaluator, the fallback layer and every test above this line
+neither changed nor noticed.
 
-This is also the choke point for PII redaction: the prompt is redacted here,
-not by the callers that build it. Putting it at the boundary means a prompt
-that reaches Google unredacted is impossible rather than merely unlikely --
-a future call site cannot forget a step it never has to take.
+**Why hand the transport over.** Google has retired a model ID under this
+project twice, once silently for weeks, and each time the fix was ours to find.
+An integration package absorbs that class of change. It also makes the
+multi-provider and streaming items on the roadmap a swap of this class rather
+than another client written from scratch.
+
+**Why keep the wrapper rather than call the model directly from the generator.**
+Redaction. The prompt is redacted *here*, not by the callers that build it, so
+a prompt reaching Google unredacted is impossible rather than merely unlikely
+-- a future call site cannot forget a step it never has to take. Dissolving
+this class into LangChain calls at each site would move that guarantee to
+every one of them.
 """
 
 from __future__ import annotations
@@ -17,14 +27,24 @@ import json
 import logging
 from typing import Any
 
-import httpx
-
 from app.services.ai.masking import Redactor, default_redactor
 from app.services.ai.tracing import traced
 
 logger = logging.getLogger(__name__)
 
-_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+# One attempt, no provider-level retries. The integration defaults to six, and
+# six is wrong here for two reasons:
+#
+#  * **Quota.** The free tier allows twenty requests per day for the whole
+#    account, so one unlucky call could quietly spend a third of the day.
+#  * **There are already two layers of retry above this one.**
+#    FallbackQuestionGenerator and FallbackEvaluator swap in the deterministic
+#    implementation the moment this raises, and the arq worker retries a failed
+#    evaluation with backoff up to EVALUATION_MAX_TRIES. A third layer inside
+#    the client multiplies with those (6 x 3 = 18 attempts for one evaluation)
+#    and delays the fallback the interview depends on -- a dead provider took
+#    78 seconds to surface here rather than the ~30 the timeout implies.
+_MAX_ATTEMPTS = 1
 
 
 class GeminiError(RuntimeError):
@@ -47,11 +67,32 @@ class GeminiClient:
         # caller that does not know whose data this is still cannot send an
         # email address or a phone number; it only loses the name.
         self._redactor = redactor or default_redactor()
+        self._chat: Any = None
+
+    def _model_client(self) -> Any:
+        """Build the chat model once, on first use.
+
+        Imported lazily and cached on the instance: the integration pulls in
+        google-genai and its auth stack, and this class is only constructed
+        when an API key exists, so an app running on the deterministic
+        fallbacks never pays for the import.
+        """
+        if self._chat is None:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+
+            self._chat = ChatGoogleGenerativeAI(
+                model=self._model,
+                api_key=self._api_key,
+                request_timeout=self._timeout,
+                max_retries=_MAX_ATTEMPTS,
+                # The contract every caller relies on: the model replies with
+                # JSON, which is then parsed below.
+                response_mime_type="application/json",
+            )
+        return self._chat
 
     @traced("gemini.generate_json", run_type="llm")
-    async def generate_json(
-        self, *, system_instruction: str, prompt: str
-    ) -> Any:
+    async def generate_json(self, *, system_instruction: str, prompt: str) -> Any:
         """Call the model in JSON mode and return the parsed payload.
 
         The prompt is redacted first. `system_instruction` is not: it is a
@@ -64,31 +105,42 @@ class GeminiClient:
             # would put it straight back where it must not be.
             logger.info("Redacted %s from prompt before the model call.", redaction.summary())
 
-        url = f"{_BASE_URL}/models/{self._model}:generateContent"
-        body = {
-            "system_instruction": {"parts": [{"text": system_instruction}]},
-            "contents": [{"role": "user", "parts": [{"text": redaction.text}]}],
-            "generationConfig": {"response_mime_type": "application/json"},
-        }
+        from langchain_core.messages import HumanMessage, SystemMessage
+
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                # The key goes in a header, never in the query string: httpx
-                # logs the full request URL, so `?key=...` printed the secret
-                # into the application logs on every call.
-                response = await client.post(
-                    url, headers={"x-goog-api-key": self._api_key}, json=body
-                )
-        except httpx.HTTPError as exc:  # pragma: no cover - network failure
+            reply = await self._model_client().ainvoke(
+                [
+                    SystemMessage(content=system_instruction),
+                    HumanMessage(content=redaction.text),
+                ]
+            )
+        except Exception as exc:  # noqa: BLE001 - the integration raises its own
+            # Everything above this line is written against GeminiError, and
+            # the fallback layer keys on it. Letting a provider-specific
+            # exception through would change what callers must handle every
+            # time the integration is upgraded.
             raise GeminiError(f"Gemini request failed: {exc}") from exc
 
-        if response.status_code != 200:
-            raise GeminiError(
-                f"Gemini returned HTTP {response.status_code}: {response.text[:500]}"
-            )
-
         try:
-            data = response.json()
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            return json.loads(text)
-        except (KeyError, IndexError, json.JSONDecodeError, ValueError) as exc:
+            return json.loads(_text_of(reply))
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
             raise GeminiError(f"Unexpected Gemini response shape: {exc}") from exc
+
+
+def _text_of(reply: Any) -> str:
+    """The reply's text, whichever shape the message carries it in.
+
+    `content` is a plain string for a simple text reply and a list of content
+    blocks when the model returns parts. Both occur, and a version bump can
+    change which -- so both are handled rather than assumed.
+    """
+    content = getattr(reply, "content", reply)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+        ]
+        return "".join(parts)
+    return str(content)

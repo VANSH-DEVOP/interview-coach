@@ -1,9 +1,14 @@
 """What actually leaves the process.
 
 tests/test_masking.py checks the rules in isolation. These check the thing the
-rules exist for: that the HTTP body sent to Google carries no identifier. They
-assert on the captured request, not on a return value, because a redactor that
-is constructed correctly and then not applied would pass every other test.
+rules exist for: that nothing carrying an identifier is handed to the provider.
+They assert on the captured outbound payload, not on a return value, because a
+redactor that is constructed correctly and then not applied would pass every
+other test.
+
+The two boundaries are captured differently because they are different
+transports: embedding still posts over httpx, while generation goes through
+LangChain's chat model. Both are intercepted at the last point we control.
 """
 
 import json
@@ -67,20 +72,65 @@ def json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+class _CapturingChatModel:
+    """Stands in for ChatGoogleGenerativeAI and records the messages sent.
+
+    The boundary moved when the transport did: what leaves the process is now
+    a list of messages handed to the integration, so that is what gets checked.
+    """
+
+    def __init__(self, reply: str = '{"ok": true}') -> None:
+        self._reply = reply
+        self.messages: list[Any] = []
+
+    async def ainvoke(self, messages: Any) -> Any:
+        self.messages.append(messages)
+
+        class _Reply:
+            content = self._reply
+
+        return _Reply()
+
+    @property
+    def sent_text(self) -> str:
+        """Every message sent, flattened, so a leak anywhere in it fails."""
+        return "\n".join(
+            json_dumps([getattr(m, "content", str(m)) for m in batch])
+            for batch in self.messages
+        )
+
+
 @pytest.fixture
-def gemini_transport(monkeypatch: pytest.MonkeyPatch) -> _CapturingTransport:
-    transport = _CapturingTransport(
-        {"candidates": [{"content": {"parts": [{"text": '{"ok": true}'}]}}]}
+def gemini_transport(monkeypatch: pytest.MonkeyPatch) -> _CapturingChatModel:
+    chat = _CapturingChatModel()
+    monkeypatch.setattr(
+        gemini_module.GeminiClient, "_model_client", lambda self: chat
     )
-    monkeypatch.setattr(gemini_module.httpx, "AsyncClient", transport)
-    return transport
+    return chat
+
+
+class _CapturingEmbeddings:
+    """Stands in for GoogleGenerativeAIEmbeddings and records what was sent."""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    async def aembed_query(self, text: str) -> list[float]:
+        self.texts.append(text)
+        return [0.1, 0.2, 0.3]
+
+    @property
+    def sent_text(self) -> str:
+        return "\n".join(self.texts)
 
 
 @pytest.fixture
-def embedding_transport(monkeypatch: pytest.MonkeyPatch) -> _CapturingTransport:
-    transport = _CapturingTransport({"embedding": {"values": [0.1, 0.2, 0.3]}})
-    monkeypatch.setattr(embedding_module.httpx, "AsyncClient", transport)
-    return transport
+def embedding_transport(monkeypatch: pytest.MonkeyPatch) -> _CapturingEmbeddings:
+    embeddings = _CapturingEmbeddings()
+    monkeypatch.setattr(
+        embedding_module.EmbeddingService, "_model_client", lambda self: embeddings
+    )
+    return embeddings
 
 
 def assert_no_identifiers(sent: str) -> None:
@@ -135,8 +185,9 @@ async def test_system_instruction_is_sent_verbatim(gemini_transport) -> None:
 
     await client.generate_json(system_instruction=instruction, prompt="Hello")
 
-    body = gemini_transport.bodies[0]
-    assert body["system_instruction"]["parts"][0]["text"] == instruction
+    # First message is the system one, carried verbatim into the request.
+    system_message = gemini_transport.messages[0][0]
+    assert system_message.content == instruction
 
 
 async def test_redaction_is_logged_as_a_tally_never_as_values(
@@ -182,7 +233,7 @@ async def test_every_text_in_a_batch_is_redacted(embedding_transport) -> None:
     )
 
     sent = embedding_transport.sent_text
-    assert len(embedding_transport.bodies) == 3
+    assert len(embedding_transport.texts) == 3
     assert_no_identifiers(sent)
     assert "ada@example.com" not in sent
 

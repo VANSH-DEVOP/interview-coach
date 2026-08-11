@@ -25,6 +25,12 @@ dependencies = [
     # @traceable decorator works on plain functions, so the pipeline is traced
     # as written rather than rewritten to be traceable.
     "langsmith>=0.10",
+    # The provider transport only. Not `langchain` itself: this pulls in
+    # langchain-core and the Google integration, and nothing above the client
+    # seam knows either exists. Adopted because Google has retired a model ID
+    # under this project twice, and an integration package absorbs that class
+    # of change instead of it being ours to find.
+    "langchain-google-genai>=4.0",
 ]
 
 [project.optional-dependencies]

@@ -71,7 +71,11 @@ Google retires model IDs, and a retired ID is a 404 that the fallback layer hide
 
 Degradations are recorded by `app/services/ai/degradation.py` and reported in the `ai` block of `GET /health` (`fallbacks`, `last_operation`, `last_error`). **Any new `except` that silently swaps in a fallback must call `record_fallback()`** — that counter is the only thing standing between a dead provider and a system that looks fine. A non-zero `fallbacks` count in a test environment means the AI path is broken, not that the fallback is working.
 
-`FallbackQuestionGenerator` / `FallbackEvaluator` wrap the primary and catch *any* exception. `GeminiClient` (`gemini_client.py`) is a hand-written httpx call to the REST API in JSON mode (no SDK); it raises `GeminiError` on bad shape/status. Model output is deliberately parsed leniently (`_first`, `_as_str_list` in `evaluator.py`) because field names vary between responses.
+`FallbackQuestionGenerator` / `FallbackEvaluator` wrap the primary and catch *any* exception. `GeminiClient` (`gemini_client.py`) and `EmbeddingService` call the provider through **LangChain's `langchain-google-genai` integration**, and raise `GeminiError` / `EmbeddingError` on any failure.
+
+**The seam is deliberately unchanged by that.** `generate_json(system_instruction=..., prompt=...) -> parsed JSON`, and the exception types, are what every caller and test above the client is written against — only the transport moved. Keep it that way: dissolving these wrappers into direct LangChain calls at each site would move the redaction guarantee to every one of them, and `masking.py` exists so a call site *cannot* forget.
+
+**`max_retries=1` is load-bearing.** The integration defaults to 6, which is wrong twice over: the free tier is 20 requests/day for the whole account, so one unlucky call spends a third of it; and there are already two retry layers above (the deterministic fallback, and the arq worker's `EVALUATION_MAX_TRIES`), which 6 would multiply with — 18 attempts for one evaluation. It also delayed the fallback: a dead provider took **78 seconds** to surface instead of ~30. Model output is deliberately parsed leniently (`_first`, `_as_str_list` in `evaluator.py`) because field names vary between responses.
 
 Flow: `ResumeService.upload()` parses PDF/DOCX (`resume_parser.py`) → sets `Resume.parsed_text` + `status` → chunks, saves the chunks as rows, then embeds them into ChromaDB (non-blocking; failure is logged, upload still succeeds).
 

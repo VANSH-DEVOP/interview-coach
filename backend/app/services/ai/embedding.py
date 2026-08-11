@@ -9,9 +9,7 @@ call site can omit it.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
-
-import httpx
+from typing import TYPE_CHECKING, Any
 
 from app.services.ai.masking import Redactor, default_redactor
 from app.services.ai.tracing import traced
@@ -20,9 +18,6 @@ if TYPE_CHECKING:
     from app.services.ai.embedding_cache import EmbeddingCache
 
 logger = logging.getLogger(__name__)
-
-_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-
 
 class EmbeddingError(RuntimeError):
     """Raised when embedding generation fails."""
@@ -47,6 +42,7 @@ class EmbeddingService:
         # fingerprint of the candidate's name and email in Redis, and would
         # miss for two resumes that differ only in redacted identifiers.
         self._cache = cache
+        self._embeddings: Any = None
 
     async def embed_text(
         self, text: str, *, redactor: Redactor | None = None
@@ -83,38 +79,44 @@ class EmbeddingService:
             await self._cache.set(redacted, embedding)
         return embedding
 
+    def _model_client(self) -> Any:
+        """Build the embedding model once, on first use.
+
+        Lazy and cached for the same reason as the chat client: the
+        integration pulls in google-genai and its auth stack, and this class is
+        only constructed when an API key exists.
+        """
+        if self._embeddings is None:
+            from langchain_google_genai import GoogleGenerativeAIEmbeddings
+            from pydantic import SecretStr
+
+            self._embeddings = GoogleGenerativeAIEmbeddings(
+                # SecretStr, so the key cannot be printed by a repr of this
+                # object -- the same concern that moved it out of the query
+                # string when it was found in the logs.
+                model=self._model,
+                api_key=SecretStr(self._api_key),
+            )
+        return self._embeddings
+
     @traced("gemini.embed", run_type="llm")
     async def _embed_uncached(self, redacted: str) -> list[float]:
-        """The provider call itself. Takes already-redacted text."""
-        url = f"{_BASE_URL}/{self._model}:embedContent"
-        body = {
-            "model": self._model,
-            "content": {"parts": [{"text": redacted}]},
-        }
+        """The provider call itself. Takes already-redacted text.
 
+        The transport is LangChain's integration; the redaction, the cache and
+        the EmbeddingError contract around it are unchanged, so callers and the
+        batch semantics below neither changed nor noticed.
+        """
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                # Header, not `?key=`: httpx logs the full URL, which would put
-                # the API key in cleartext in the application logs.
-                response = await client.post(
-                    url, headers={"x-goog-api-key": self._api_key}, json=body
-                )
-        except httpx.HTTPError as exc:
+            embedding = await self._model_client().aembed_query(redacted)
+        except Exception as exc:  # noqa: BLE001 - the integration raises its own
+            # Everything above is written against EmbeddingError, and
+            # embed_batch keys on it to represent a per-chunk failure.
             raise EmbeddingError(f"Embedding request failed: {exc}") from exc
 
-        if response.status_code != 200:
-            raise EmbeddingError(
-                f"Embedding API returned HTTP {response.status_code}: {response.text[:500]}"
-            )
-
-        try:
-            data = response.json()
-            embedding = data["embedding"]["values"]
-            if not isinstance(embedding, list):
-                raise ValueError("Invalid embedding format")
-            return embedding
-        except (KeyError, IndexError, ValueError) as exc:
-            raise EmbeddingError(f"Unexpected embedding response: {exc}") from exc
+        if not isinstance(embedding, list) or not embedding:
+            raise EmbeddingError("Embedding API returned no vector.")
+        return embedding
 
     async def embed_batch(
         self, texts: list[str], *, redactor: Redactor | None = None
