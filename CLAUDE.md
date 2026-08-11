@@ -282,7 +282,24 @@ Frontend: `npm test` (vitest + jsdom + React Testing Library). `tsc --noEmit` co
 ## Frontend
 
 - Route groups: `(auth)/` for login/register, `(app)/` for the authenticated shell (sidebar + mobile nav). Pages are client components calling the backend directly through `@/lib/api-client`.
-- Tokens are stored in **cookies** (`ip_access_token`, `ip_refresh_token`) so `middleware.ts` can gate routes; `api-client.ts` does one transparent refresh-and-retry on a 401. `middleware.ts` is a UX guard only — real authorization is server-side.
+- Tokens are stored in **cookies** (`ip_access_token`, `ip_refresh_token`) so `src/middleware.ts` can gate routes; `api-client.ts` does one transparent refresh-and-retry on a 401. The route guard is a UX guard only — real authorization is server-side.
+- **`src/middleware.ts`, not `middleware.ts`.** This project uses a `src/` directory, and Next only loads middleware from inside it. The file sat at the repository root for the life of the project and was therefore never executed: `/dashboard` answered 200 to anyone, and no test caught it, because importing the function and calling it works fine on a file Next is ignoring. Tests live at `src/middleware.test.ts` — next to the thing they protect, so moving one moves both.
+
+### Security headers and CSP
+
+Two surfaces, deliberately different, because a CSP protects a *rendering* context and only one of these renders.
+
+**Backend** (`app/middleware/security_headers.py`) serves JSON, so its policy is the maximally restrictive `default-src 'none'` rather than a tuned allowlist. Its job is to make inert the two things that do render: a substituted error page, and any endpoint that returns HTML by accident. Three details that are load-bearing:
+
+- **Registered last in `create_app`, which makes it outermost.** Starlette inserts each middleware at the front of the stack, so last-added is entered first. `CORSMiddleware` answers a preflight itself without calling through — registered before it, the headers middleware never sees those responses. The preflight test caught this.
+- **`docs_paths` comes from the app's own `docs_url`**, which is `None` in production. Swagger UI needs a CDN-permitting policy; matching on the literal path instead handed that policy to the 404 that replaces the page in production.
+- **HSTS is production-only**, and without `preload`. It is a year-long promise about a *host*: sent from a staging box under a shared parent domain it outlives the box, and `preload` submits the domain to a list compiled into browsers.
+
+**Frontend** (`src/middleware.ts`) is where the real CSP lives, nonce-based, with `strict-dynamic` and no `'unsafe-inline'` for scripts. `style-src` does allow inline, knowingly — Next injects `<style>` during navigation and nonces are not reliably applied to those; a stylesheet can deface and probe but cannot execute.
+
+**The nonce costs static prerendering, and that was the trade.** `export const dynamic = "force-dynamic"` in the root layout turns 11 prerendered routes into server-rendered ones. It is required, not incidental: a prerendered page's 7 inline hydration scripts are baked at build time and carry no nonce, so a per-request nonce matches nothing and `strict-dynamic` blocks every script on the page. **The failure is invisible outside a browser** — status 200, correct-looking HTML, blank screen. Verified by counting nonce attributes against the header's nonce in a running production build, not by reading the build output, which reported the routes as static right up until `force-dynamic` was added.
+
+Why it was worth it: the alternative is `script-src 'unsafe-inline'`, and the tokens are in JS-readable cookies (`api-client.ts` reads `document.cookie`), so an injected script takes the session rather than merely defacing a page. The routes it costs are auth-gated shells that fetch client-side, and this deploys as one container with no CDN — so what is actually lost is re-rendering a static shell per request. **Revisit if a CDN appears, or once the httpOnly-cookie BFF lands.**
 - `src/types/index.ts` hand-mirrors the backend Pydantic schemas. Changing a response schema means editing both sides.
 - `src/hooks/use-auth.ts` is the single entry point for login/register/logout and current-user state.
 

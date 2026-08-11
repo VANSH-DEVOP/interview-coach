@@ -15,6 +15,7 @@ from app.core.logging import configure_logging
 from app.db.session import engine
 from app.middleware.error_handler import register_exception_handlers
 from app.middleware.request_logging import RequestLoggingMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.services.evaluation_worker import recover_stale_reports
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,27 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+    )
+    # Registered LAST, which makes it the OUTERMOST layer: Starlette inserts
+    # each new middleware at the front of the stack, so the last one added is
+    # the first one entered and the last one to touch a response.
+    #
+    # That ordering is load-bearing, not tidiness. CORSMiddleware answers a
+    # preflight itself and never calls through, so a security-headers
+    # middleware registered *before* it -- and therefore wrapped by it -- never
+    # sees those responses at all. Verified by the preflight test in
+    # tests/api/test_security_headers.py, which failed when this was the other
+    # way round.
+    app.add_middleware(
+        SecurityHeadersMiddleware,
+        # Only where the site is actually served over HTTPS. See the module
+        # docstring: this is a year-long promise about a host, not a response.
+        hsts=settings.ENVIRONMENT == "production",
+        # From the app's own docs_url, not a copy of it. In production that is
+        # None, so the CDN-permitting policy Swagger needs is not merely unused
+        # there -- it does not exist. Matching on the path instead handed that
+        # policy to the 404 that replaces the page.
+        docs_paths=tuple(path for path in (app.docs_url, app.redoc_url) if path),
     )
 
     register_exception_handlers(app)
