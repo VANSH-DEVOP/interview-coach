@@ -85,6 +85,23 @@ Two nulls that are not zeros, for the same reason as `cache_errors` vs `cache_mi
 
 An operation is not a call: one `initial_questions` may spend two provider calls (generate, then a corrective refine) and is still one thing that either worked or came back generic. That is why `attempts` is counted at the wrappers and `calls` at the transport, and why the two rates differ.
 
+### Metrics (Prometheus)
+
+`GET /metrics`, off until `METRICS_ENABLED`, token-guarded via `METRICS_TOKEN`. Outside `/api/v1` because it is not part of the product API and Prometheus looks for `/metrics` by convention. When disabled it answers **404, not 403** — a switched-off endpoint should be indistinguishable from one that never existed.
+
+**`app/core/metrics.py` exports the counters that already exist rather than replacing them.** A collector reads `degradation`, `call_metrics`, `retrieval_metrics`, `rate_limit` and `job_queue` snapshots at scrape time, so `/health` and `/metrics` cannot disagree, and none of those modules had to grow a second write path that could fail inside a request.
+
+**Process-local state is right here, unlike at `/health`.** Every one of those modules documents that its counters reset with the process and are not shared between replicas — a caveat for a human reading one instance, and exactly what Prometheus wants, since it scrapes each instance and sums across them.
+
+Two conventions that are load-bearing:
+
+- **Raw counters, never pre-computed rates.** `ai.fallback_rate` at `/health` is an average over the life of the process, which an hour of total failure barely moves. `/metrics` exports `ai_attempts_total` and `ai_fallbacks_total` and leaves `rate(fallbacks[5m]) / rate(attempts[5m])` to the query. There is a test that `fallback_rate` does **not** appear.
+- **Route templates, never raw paths.** `MetricsMiddleware` labels with `request.scope["route"].path`, so every interview's answers land on one series instead of one each — and anything unmatched becomes `unmatched`, because on a 404 that label would otherwise be attacker-controlled and a few thousand random URLs would exhaust the scrape.
+
+Latency buckets go to 30s rather than the client's default 10, because the interesting tail is the AI routes where the provider timeout is 30 and the default would put every slow generation in the same bucket as every timeout.
+
+**The worker is not scraped.** It runs no HTTP server, so its counters are invisible here; its liveness is already covered by the Redis heartbeat and `/health`'s `worker` block. Exporting them would mean a pushgateway, which is a separate decision.
+
 ### Error reporting (Sentry)
 
 `app/core/error_reporting.py`. Off until `SENTRY_DSN` is set. Configured in both processes — `app/main.py`'s lifespan and `app/worker.py`'s `startup` — because they are separate processes and the worker is where an unreported failure costs most: nobody is watching a response when a cron job dies.

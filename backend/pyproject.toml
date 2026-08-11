@@ -55,6 +55,10 @@ dependencies = [
     # common source of resolver conflicts, and the calls here are already
     # offloaded with asyncio.to_thread, the way local.py handles file I/O.
     "boto3>=1.34",
+    # Prometheus exposition. The counters already exist in-process; this
+    # only formats them, via a collector that reads them at scrape time
+    # rather than a second set of numbers that can disagree with /health.
+    "prometheus-client>=0.20",
 ]
 
 [project.optional-dependencies]

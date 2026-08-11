@@ -261,6 +261,17 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
+    # -- Metrics (Prometheus) --------------------------------------------------
+    # Exposes /metrics. Off by default: the counters describe the deployment
+    # rather than any one user, but together they are an operational picture --
+    # signups, provider failure rate, remaining quota -- worth withholding from
+    # the public internet. When off the endpoint 404s, so scanning for it says
+    # nothing about whether it exists.
+    METRICS_ENABLED: bool = False
+    # Required as `Authorization: Bearer <token>` when set. Set it, or restrict
+    # /metrics at the proxy, on anything reachable from outside.
+    METRICS_TOKEN: str | None = None
+
     # -- Rate limiting ---------------------------------------------------------
     # Counters are per-process (see app/core/rate_limit.py), so with N workers
     # the effective ceiling is N x these values.

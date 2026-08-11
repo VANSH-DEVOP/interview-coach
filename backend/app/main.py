@@ -8,12 +8,14 @@ from arq.connections import RedisSettings
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.metrics import router as metrics_router
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.error_reporting import configure_error_reporting
 from app.core.logging import configure_logging
 from app.db.session import engine
 from app.middleware.error_handler import register_exception_handlers
+from app.middleware.metrics import MetricsMiddleware
 from app.middleware.request_logging import RequestLoggingMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.services.evaluation_worker import recover_stale_reports
@@ -80,6 +82,7 @@ def create_app() -> FastAPI:
     )
 
     app.add_middleware(RequestLoggingMiddleware)
+    app.add_middleware(MetricsMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,
@@ -111,6 +114,9 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(app)
     app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+    # Outside the versioned prefix on purpose: /metrics is where
+    # Prometheus looks, and it carries no API versioning promise.
+    app.include_router(metrics_router)
     return app
 
 
