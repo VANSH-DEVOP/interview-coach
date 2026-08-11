@@ -386,7 +386,20 @@ Frontend: `npm test` (vitest + jsdom + React Testing Library), `npm run test:cov
 ## Frontend
 
 - Route groups: `(auth)/` for login/register, `(app)/` for the authenticated shell (sidebar + mobile nav). Pages are client components calling the backend directly through `@/lib/api-client`.
-- Tokens are stored in **cookies** (`ip_access_token`, `ip_refresh_token`) so `src/middleware.ts` can gate routes; `api-client.ts` does one transparent refresh-and-retry on a 401. The route guard is a UX guard only — real authorization is server-side.
+- **The browser never holds a token.** Sessions live in **httpOnly** cookies set by the BFF proxy at `src/app/api/bff/[...path]/route.ts`; `api-client.ts` has no token handling at all and sends no `Authorization` header. `src/middleware.ts` can still gate routes because middleware runs server-side and can read httpOnly cookies. The route guard remains a UX guard only — real authorization is server-side.
+
+### The BFF proxy
+
+Every API call goes to this app's own `/api/bff/*` and is forwarded with a Bearer token attached server-side. **All of them, not just the auth ones** — if ordinary requests went straight to the API they would need an `Authorization` header, which means JavaScript would need the token, which is the thing being removed.
+
+- **Token pairs are caught by shape, not by path.** Login, refresh and password reset all answer with one, and so will whatever is added next; matching generically is what stops a new endpoint leaking tokens by being forgotten in a list.
+- **Refresh moved here, and its three outcomes came with it.** "The API refused the token" and "the API could not be asked" must stay different events — collapsing them once meant a momentary outage cleared the session and sent people to a login page that could not work either. Unreachable or 5xx answers 503 with the cookies untouched; only a genuine rejection clears them.
+- **Logout is the one path-specific case.** It surrenders the refresh token and the browser no longer has one, so the proxy supplies it from the cookie. Handing the token back to JavaScript for the length of one request is exactly what this exists to stop.
+- **Non-JSON responses pass through as bytes.** A PDF export would be corrupted by a round trip through `JSON.parse`.
+- **`API_INTERNAL_URL`, not `NEXT_PUBLIC_API_URL`.** The public one is baked into the browser bundle and must be an address the *browser* can reach; this is container-to-container, where `localhost` means the frontend itself. Compose sets `http://backend:8000/api/v1`.
+- CSRF: `SameSite=Lax` withholds the cookies on cross-site POSTs, and an `Origin` check refuses mismatches as a second layer. Both matter now that the credential travels automatically instead of in a header an attacker cannot forge.
+
+**What this bought elsewhere:** `connect-src` in the CSP tightened to `'self'` alone, because the browser no longer has a cross-origin destination. **What it did not buy:** the `force-dynamic` nonce CSP is still worth its cost — an injected script can no longer steal the session, but it can still act as the user through the same-origin proxy and read the page. That was re-checked when this landed rather than left resting on an expired premise.
 - **`src/middleware.ts`, not `middleware.ts`.** This project uses a `src/` directory, and Next only loads middleware from inside it. The file sat at the repository root for the life of the project and was therefore never executed: `/dashboard` answered 200 to anyone, and no test caught it, because importing the function and calling it works fine on a file Next is ignoring. Tests live at `src/middleware.test.ts` — next to the thing they protect, so moving one moves both.
 
 ### Security headers and CSP

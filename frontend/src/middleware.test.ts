@@ -90,8 +90,9 @@ describe("content security policy", () => {
   });
 
   it("never allows inline script", () => {
-    // The whole point. Tokens are in JS-readable cookies, so an injected
-    // script takes the session rather than merely defacing a page.
+    // Still the whole point after the BFF, though for a narrower reason: an
+    // injected script can no longer read the session, but it can act as the
+    // user through the same-origin proxy and read the page it is sitting on.
     expect(directive(policyOf("/"), "script-src")).not.toContain("unsafe-inline");
     expect(directive(policyOf("/"), "script-src")).not.toContain("unsafe-eval");
   });
@@ -102,13 +103,13 @@ describe("content security policy", () => {
     expect(directive(policyOf("/"), "style-src")).toContain("unsafe-inline");
   });
 
-  it("allows the API origin to be called and nothing else", () => {
+  it("allows same-origin connections and nothing else", () => {
     const connect = directive(policyOf("/"), "connect-src");
 
-    expect(connect).toContain("'self'");
-    // NEXT_PUBLIC_API_URL is unset under test, and the fallback is to allow
-    // only same-origin rather than to widen the policy.
-    expect(connect).not.toContain("*");
+    // The BFF paid for this. The browser used to call the API on another
+    // origin, so this directive had to name it; every request now goes to this
+    // app's own /api/bff proxy, leaving no cross-origin destination to allow.
+    expect(connect).toBe("connect-src 'self'");
   });
 
   it("cannot be framed, re-pointed, or made to post elsewhere", () => {

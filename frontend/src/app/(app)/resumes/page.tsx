@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import { Download, Eye, FileText, RefreshCw, Trash2, Upload } from "lucide-react";
 
-import { api, ApiError, getAccessToken } from "@/lib/api-client";
+import { api, ApiError } from "@/lib/api-client";
 import type { Page, Resume, ResumePreview } from "@/types";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -14,7 +14,6 @@ import { Card, CardContent } from "@/components/ui/card";
 const ACCEPTED =
   ".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -101,9 +100,7 @@ export default function ResumesPage() {
     // Authenticated binary download: fetch with the bearer token, then save.
     setError(null);
     try {
-      const response = await fetch(`${API_URL}/resumes/${resume.id}/download`, {
-        headers: { Authorization: `Bearer ${getAccessToken() ?? ""}` },
-      });
+      const response = await fetch(`/api/bff/resumes/${resume.id}/download`);
       if (!response.ok) throw new Error("Download failed.");
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);

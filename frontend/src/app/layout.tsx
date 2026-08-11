@@ -17,12 +17,15 @@ import "@/styles/globals.css";
  * server-rendered ones. They are auth-gated shells that fetch their data
  * client-side, and this deploys as one container with no CDN, so what is
  * actually lost is re-rendering a static shell per request. The alternative was
- * `script-src 'unsafe-inline'`, and the tokens live in JS-readable cookies
- * (`api-client.ts`), so that would aim the policy away from the one attack that
- * matters most here.
+ * `script-src 'unsafe-inline'`. That was originally justified by tokens being
+ * readable from JavaScript; the httpOnly BFF has since removed that, and the
+ * decision was re-checked rather than left standing on a premise that expired.
+ * An injected script can no longer steal the session, but it can still act as
+ * the user through the same-origin proxy and read whatever is on the page --
+ * so the policy still earns a cost that remains close to nothing.
  *
- * Revisit if a CDN appears in front of this, or if the httpOnly-cookie BFF
- * lands and an injected script can no longer take the session.
+ * Revisit if a CDN appears in front of this, which is the one change that would
+ * make the prerendering genuinely worth something.
  */
 export const dynamic = "force-dynamic";
 

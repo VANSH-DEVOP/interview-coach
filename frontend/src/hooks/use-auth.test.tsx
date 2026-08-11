@@ -12,17 +12,10 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAuth } from "./use-auth";
-import { setTokens } from "@/lib/api-client";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn() }),
 }));
-
-const TOKENS = {
-  access_token: "access-1",
-  refresh_token: "refresh-1",
-  token_type: "bearer" as const,
-};
 
 const USER = {
   id: "u1",
@@ -55,9 +48,11 @@ function errorResponse(status: number, code: string): Response {
   return jsonResponse({ error: { code, message: "nope", details: null } }, status);
 }
 
+// There is no "prime a token" step any more. The session is an httpOnly cookie
+// this code cannot read or write, so whether anyone is signed in is decided
+// entirely by how the server answers /users/me.
 describe("useAuth", () => {
   it("loads the current user when there is a session", async () => {
-    setTokens(TOKENS);
     fetchMock.mockResolvedValueOnce(jsonResponse(USER));
 
     const { result } = renderHook(() => useAuth());
@@ -68,7 +63,6 @@ describe("useAuth", () => {
   });
 
   it("reports an unreachable server without signing the user out", async () => {
-    setTokens(TOKENS);
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
 
     const { result } = renderHook(() => useAuth());
@@ -80,7 +74,6 @@ describe("useAuth", () => {
   });
 
   it("reports a broken backend the same way, not as a logout", async () => {
-    setTokens(TOKENS);
     fetchMock.mockResolvedValue(errorResponse(500, "internal_error"));
 
     const { result } = renderHook(() => useAuth());
@@ -92,7 +85,6 @@ describe("useAuth", () => {
 
   it("does sign the user out when the session is genuinely over", async () => {
     // The other half: caution about outages must not keep a dead session alive.
-    setTokens(TOKENS);
     fetchMock
       .mockResolvedValueOnce(errorResponse(401, "unauthorized")) // /users/me
       .mockResolvedValueOnce(errorResponse(401, "token_revoked")); // refresh refused
@@ -104,16 +96,23 @@ describe("useAuth", () => {
     expect(result.current.connectionError).toBeNull();
   });
 
-  it("does not call the API at all without a token", async () => {
+  it("asks the server even when nobody is signed in", async () => {
+    // The inverse of what this asserted before. The hook used to skip the call
+    // when no readable token was present -- an optimisation that is no longer
+    // available, and should not be faked: the session is an httpOnly cookie,
+    // so only the server knows whether one exists. A 401 is the answer.
+    fetchMock.mockResolvedValueOnce(errorResponse(401, "unauthorized"));
+
     const { result } = renderHook(() => useAuth());
 
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(result.current.user).toBeNull();
+    // Not a connection problem: the server answered, and the answer was no.
+    expect(result.current.connectionError).toBeNull();
   });
 
   it("recovers on retry once the server comes back", async () => {
-    setTokens(TOKENS);
     fetchMock
       .mockRejectedValueOnce(new TypeError("Failed to fetch"))
       .mockResolvedValueOnce(jsonResponse(USER));

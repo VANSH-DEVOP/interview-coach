@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AlertTriangle, Download, Loader2, Printer, RefreshCw } from "lucide-react";
 
-import { api, ApiError, getAccessToken } from "@/lib/api-client";
+import { api, ApiError } from "@/lib/api-client";
 import type { EvaluationReport } from "@/types";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,6 @@ import { ReportView } from "@/components/shared/report-view";
  *  far fewer requests than a tight loop. */
 const POLL_INTERVAL_MS = 2000;
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 export default function SessionReportPage() {
   const params = useParams<{ sessionId: string }>();
@@ -88,9 +87,7 @@ export default function SessionReportPage() {
     if (!report) return;
     setError(null);
     try {
-      const response = await fetch(`${API_URL}/reports/${report.id}/export`, {
-        headers: { Authorization: `Bearer ${getAccessToken() ?? ""}` },
-      });
+      const response = await fetch(`/api/bff/reports/${report.id}/export`);
       if (!response.ok) throw new Error("Export failed.");
 
       const disposition = response.headers.get("content-disposition") ?? "";

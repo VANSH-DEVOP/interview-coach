@@ -20,10 +20,13 @@
  *
  *   - The alternative is `script-src 'unsafe-inline'`, which Next.js needs for
  *     its hydration scripts otherwise. That defeats the one thing CSP is really
- *     for. And the tokens live in JS-readable cookies (see api-client.ts, and
- *     the httpOnly BFF item in goals.md), so an injected script does not merely
- *     deface a page -- it takes the session. `unsafe-inline` would leave the
- *     policy pointed away from the attack that matters most here.
+ *     for. **Re-examined when the httpOnly BFF landed**, since the note here
+ *     used to rest on tokens being readable from JavaScript and they no longer
+ *     are. The conclusion held: an injected script can no longer steal the
+ *     session to replay elsewhere, but it can still act as the user through the
+ *     same-origin proxy, read a resume off the page, and capture a password on
+ *     the login form. The benefit is narrower than it was; the cost is still
+ *     close to nothing, so the trade still favours the nonce.
  *   - The routes it costs are auth-gated shells that fetch their data
  *     client-side, and this deploys as a single container with no CDN in front.
  *     Rendering the same shell per request is close to free; there was no edge
@@ -35,25 +38,6 @@ import type { NextRequest } from "next/server";
 
 const PROTECTED_PREFIXES = ["/dashboard", "/profile", "/resumes", "/interviews", "/reports"];
 const AUTH_PAGES = ["/login", "/register"];
-
-/**
- * The API origin, so `connect-src` can allow it. The frontend and the API are
- * separate origins in every environment including local (`:3000` and `:8000`),
- * so omitting this blocks every request the app makes.
- *
- * Falls back to allowing only same-origin rather than to allowing anything: a
- * misconfigured build should fail visibly in the console, not quietly widen the
- * policy.
- */
-function apiOrigin(): string {
-  const url = process.env.NEXT_PUBLIC_API_URL;
-  if (!url) return "";
-  try {
-    return new URL(url).origin;
-  } catch {
-    return "";
-  }
-}
 
 function contentSecurityPolicy(nonce: string): string {
   const directives = [
@@ -72,7 +56,11 @@ function contentSecurityPolicy(nonce: string): string {
     // blob: and data: are for locally previewed resume uploads.
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
-    [`connect-src 'self'`, apiOrigin()].filter(Boolean).join(" "),
+    // `'self'` alone, and that is a tightening the BFF paid for. The browser
+    // used to call the API on another origin, so this had to name it; every
+    // request now goes to this app's own /api/bff proxy, so there is no
+    // cross-origin destination left to allow.
+    "connect-src 'self'",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",

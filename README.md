@@ -301,7 +301,11 @@ The reasoning, and the conditions that would reopen either, are in `goals.md`.
 - Dependencies are audited in CI (`pip-audit`, `npm audit`) with Dependabot
   raising the updates. One advisory is ignored, with a reachability argument and
   the condition that ends it.
-- **Hardening backlog:** the httpOnly cookie BFF for tokens — they currently
-  live in JS-readable cookies, which is why the CSP above is worth its cost —
-  and an account-wide AI budget, since per-user quotas cannot bound a provider
-  quota shared by the whole deployment.
+- **The browser holds no session token.** Every API call goes through this app's
+  own `/api/bff/*` proxy, which keeps the access and refresh tokens in httpOnly
+  cookies and attaches the Bearer header server-side. An injected script can no
+  longer read the session. Token refresh happens in the proxy, and keeps the
+  distinction it has always had: an unreachable API is reported as a transport
+  failure with the session intact, never as a logout.
+- **Hardening backlog:** an account-wide AI budget, since per-user quotas cannot
+  bound a provider quota shared by the whole deployment.

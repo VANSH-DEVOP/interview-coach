@@ -4,7 +4,7 @@ import { useState, type FormEvent } from "react";
 
 import { useRouter } from "next/navigation";
 
-import { api, ApiError, clearTokens, setTokens } from "@/lib/api-client";
+import { api, ApiError } from "@/lib/api-client";
 import { useAuth } from "@/hooks/use-auth";
 import type { TokenPair, User } from "@/types";
 import { PageHeader } from "@/components/shared/page-header";
@@ -64,12 +64,13 @@ export default function ProfilePage() {
     setIsChangingPassword(true);
     try {
       // The server revokes every session, including this one, and hands back a
-      // replacement pair. Storing it is what keeps the user signed in here.
-      const tokens = await api.post<TokenPair>("/users/me/password", {
+      // replacement pair. The proxy moves that pair straight into the httpOnly
+      // cookies, which is what keeps the user signed in here -- this code never
+      // sees it.
+      await api.post("/users/me/password", {
         current_password: String(data.get("current_password")),
         new_password: newPassword,
       });
-      setTokens(tokens);
       form.reset();
       setPasswordMessage({
         kind: "success",
@@ -104,7 +105,8 @@ export default function ProfilePage() {
       await api.delete("/users/me", { password });
       // Straight to the login page rather than through logout: the refresh
       // token has already gone with the account, so there is nothing to revoke.
-      clearTokens();
+      // The proxy drops the cookies on this response -- this code could not,
+      // since httpOnly is the point.
       router.push("/login");
     } catch (err) {
       setDeleteError(

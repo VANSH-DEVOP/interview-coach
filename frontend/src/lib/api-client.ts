@@ -1,17 +1,27 @@
 /**
- * Typed API client with JWT auth and automatic access-token refresh.
+ * Typed API client. Same-origin, and it holds no credentials.
  *
- * Token storage (MVP): cookies readable by the Next.js middleware for route
- * protection. Harden later by moving refresh tokens to httpOnly cookies set
- * by a BFF route.
+ * Requests go to this app's own `/api/bff/*` proxy rather than to the API
+ * directly, and the session travels as an httpOnly cookie the browser attaches
+ * by itself. **There is deliberately no token handling in this file.** Tokens
+ * used to live in `document.cookie`, which meant any injected script could read
+ * the session; they now exist only in the Next server process, and this module
+ * cannot see them even if it wanted to.
+ *
+ * Refresh moved to the proxy along with them, which is why the retry logic that
+ * used to be here is gone rather than merely relocated. Its three outcomes are
+ * preserved there — see the note in the route handler about why "refused" and
+ * "could not be asked" must stay different events.
  */
 
-import type { ApiErrorBody, TokenPair } from "@/types";
+import type { ApiErrorBody } from "@/types";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
-
-const ACCESS_TOKEN_KEY = "ip_access_token";
-const REFRESH_TOKEN_KEY = "ip_refresh_token";
+/**
+ * Same-origin and relative on purpose. An absolute URL would reintroduce the
+ * cross-origin request this design removes, and with it the CORS configuration
+ * and the need for the browser to hold a credential of its own.
+ */
+const API_URL = "/api/bff";
 
 /** What kind of failure this was, which is what callers actually branch on. */
 export type ErrorKind =
@@ -68,49 +78,10 @@ export class NetworkError extends ApiError {
   }
 }
 
-// -- Token management ---------------------------------------------------------
-
-function readCookie(name: string): string | null {
-  if (typeof document === "undefined") return null;
-  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
-function writeCookie(name: string, value: string, maxAgeSeconds: number): void {
-  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${maxAgeSeconds}; samesite=lax`;
-}
-
-function clearCookie(name: string): void {
-  document.cookie = `${name}=; path=/; max-age=0`;
-}
-
-export function setTokens(tokens: TokenPair): void {
-  writeCookie(ACCESS_TOKEN_KEY, tokens.access_token, 60 * 30);
-  writeCookie(REFRESH_TOKEN_KEY, tokens.refresh_token, 60 * 60 * 24 * 7);
-}
-
-export function clearTokens(): void {
-  clearCookie(ACCESS_TOKEN_KEY);
-  clearCookie(REFRESH_TOKEN_KEY);
-}
-
-export function getAccessToken(): string | null {
-  return readCookie(ACCESS_TOKEN_KEY);
-}
-
-export function getRefreshToken(): string | null {
-  return readCookie(REFRESH_TOKEN_KEY);
-}
-
 // -- Core request -------------------------------------------------------------
 
-async function rawRequest<T>(
-  path: string,
-  options: RequestInit = {},
-  token: string | null = getAccessToken()
-): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
-  if (token) headers.set("Authorization", `Bearer ${token}`);
   if (options.body && !(options.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
@@ -144,60 +115,6 @@ async function rawRequest<T>(
   }
 
   return (await response.json()) as T;
-}
-
-type RefreshOutcome =
-  /** New tokens are stored; replay the original request. */
-  | { status: "refreshed" }
-  /** The server refused the refresh token. The session is over. */
-  | { status: "rejected" }
-  /** Could not find out -- the server was unreachable or broken. */
-  | { status: "unavailable"; error: ApiError };
-
-/**
- * Exchange the refresh token for a new pair.
- *
- * The three outcomes exist because this used to have two, and collapsing
- * "refused" into "could not ask" is a bug with teeth: a refresh attempted
- * while offline cleared the tokens, so a momentary network drop *destroyed a
- * live session* and dumped the user on the login page. Tokens are now cleared
- * only when the server itself rejects them.
- */
-async function tryRefresh(): Promise<RefreshOutcome> {
-  const refreshToken = readCookie(REFRESH_TOKEN_KEY);
-  if (!refreshToken) return { status: "rejected" };
-  try {
-    const tokens = await rawRequest<TokenPair>(
-      "/auth/refresh",
-      { method: "POST", body: JSON.stringify({ refresh_token: refreshToken }) },
-      null
-    );
-    setTokens(tokens);
-    return { status: "refreshed" };
-  } catch (error) {
-    if (error instanceof ApiError && error.isTransient) {
-      return { status: "unavailable", error };
-    }
-    clearTokens();
-    return { status: "rejected" };
-  }
-}
-
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  try {
-    return await rawRequest<T>(path, options);
-  } catch (error) {
-    if (!(error instanceof ApiError) || error.status !== 401) throw error;
-
-    // One transparent retry after refreshing an expired access token.
-    const outcome = await tryRefresh();
-    if (outcome.status === "refreshed") return rawRequest<T>(path, options);
-    // The 401 came back because we could not renew the token, not because the
-    // session is finished. Reporting it as "unauthorized" would send the user
-    // to a login page that cannot work either; report what actually happened.
-    if (outcome.status === "unavailable") throw outcome.error;
-    throw error;
-  }
 }
 
 // -- Public surface -------------------------------------------------------------

@@ -4,7 +4,7 @@ import { Suspense, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
-import { api, ApiError, setTokens } from "@/lib/api-client";
+import { api, ApiError } from "@/lib/api-client";
 import type { TokenPair } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -33,11 +33,10 @@ function ResetPasswordForm() {
       // The server signs every session out and hands back a fresh pair, so a
       // successful reset lands the user straight in the app rather than at a
       // login form asking for a password they invented four seconds ago.
-      const tokens = await api.post<TokenPair>("/auth/reset-password", {
+      await api.post("/auth/reset-password", {
         token,
         new_password: password,
       });
-      setTokens(tokens);
       router.push("/dashboard");
     } catch (err) {
       setError(

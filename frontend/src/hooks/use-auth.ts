@@ -5,15 +5,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import {
-  api,
-  ApiError,
-  clearTokens,
-  getAccessToken,
-  getRefreshToken,
-  setTokens,
-} from "@/lib/api-client";
-import type { TokenPair, User } from "@/types";
+import { api, ApiError } from "@/lib/api-client";
+import type { User } from "@/types";
 
 interface AuthState {
   user: User | null;
@@ -34,10 +27,9 @@ export function useAuth() {
   });
 
   const loadUser = useCallback(async () => {
-    if (!getAccessToken()) {
-      setState({ user: null, isLoading: false, connectionError: null });
-      return;
-    }
+    // Asked unconditionally now. The session lives in an httpOnly cookie this
+    // code cannot read, so "is anyone signed in" is a question only the server
+    // can answer -- and a 401 answers it.
     try {
       const user = await api.get<User>("/users/me");
       setState({ user, isLoading: false, connectionError: null });
@@ -66,8 +58,9 @@ export function useAuth() {
 
   const login = useCallback(
     async (email: string, password: string) => {
-      const tokens = await api.post<TokenPair>("/auth/login", { email, password });
-      setTokens(tokens);
+      // The proxy takes the token pair out of this response and puts it in
+      // httpOnly cookies; nothing usable comes back to this code, by design.
+      await api.post("/auth/login", { email, password });
       await loadUser();
       router.push("/dashboard");
     },
@@ -82,8 +75,9 @@ export function useAuth() {
         password,
       });
       // Auto-login after successful registration.
-      const tokens = await api.post<TokenPair>("/auth/login", { email, password });
-      setTokens(tokens);
+      // The proxy takes the token pair out of this response and puts it in
+      // httpOnly cookies; nothing usable comes back to this code, by design.
+      await api.post("/auth/login", { email, password });
       await loadUser();
       router.push("/dashboard");
     },
@@ -92,23 +86,20 @@ export function useAuth() {
 
   const logout = useCallback(
     async (everywhere = false) => {
-      const refreshToken = getRefreshToken();
-      // Clearing the cookie only stops *this* browser using the token. Until
-      // the server revokes it, a copy taken from the machine stays valid for
-      // the full refresh lifetime.
-      if (refreshToken) {
-        try {
-          await api.post("/auth/logout", {
-            refresh_token: refreshToken,
-            everywhere,
-          });
-        } catch {
-          // Offline, or the token was already dead. Either way the user asked
-          // to be signed out, so sign them out locally rather than trapping
-          // them on the page with an error they cannot act on.
-        }
+      try {
+        // The proxy supplies the refresh token from its cookie and clears both
+        // cookies afterwards -- this code has no token to send and no cookie it
+        // could delete, since httpOnly is the point.
+        //
+        // Revoking server-side still matters: dropping a cookie only stops
+        // *this* browser using the token, while a copy taken from the machine
+        // would stay valid for the full refresh lifetime.
+        await api.post("/auth/logout", { everywhere });
+      } catch {
+        // Offline, or the token was already dead. Either way the user asked to
+        // be signed out, so sign them out locally rather than trapping them on
+        // the page with an error they cannot act on.
       }
-      clearTokens();
       setState({ user: null, isLoading: false, connectionError: null });
       router.push("/login");
     },

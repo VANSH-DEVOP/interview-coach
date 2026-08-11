@@ -138,6 +138,12 @@ services:
       context: ./frontend
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
+    environment:
+      # Server-side only, read by the BFF proxy. Deliberately different from
+      # NEXT_PUBLIC_API_URL: that one is baked into the browser bundle and must
+      # be an address the *browser* can reach, whereas this is one container
+      # calling another, where `localhost` would mean the frontend itself.
+      API_INTERNAL_URL: http://backend:8000/api/v1
     restart: unless-stopped
     depends_on:
       - backend
