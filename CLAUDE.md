@@ -307,6 +307,17 @@ Retrieval used to be issued `"skills and experience relevant to {role}"` (four f
 
 `rewrite()` falls back to the original string when every term is filler — a bad query is bad, but an empty one retrieves nothing and the caller cannot tell those apart from the result.
 
+## Interview navigation and the question clock
+
+**Navigation goes both ways, and that is correctness rather than polish.** Skipping moves forwards; with nothing moving back a skipped question was unreachable — "skipped" meant "skipped for ever". There is a Previous button, and a numbered strip above the question showing answered / skipped / current that jumps to any of them. Reachable is the button; *visible* is the strip, because a skipped question should not be something the candidate has to remember passing over.
+
+**The per-question clock lives in `sessionStorage`** (`src/lib/question-clock.ts`). It used to be `Date.now()` taken on mount, so a reload silently restarted it. That stopped being cosmetic when pacing feedback landed — the number reaches the evaluator, which is told it is "the whole time from seeing the question to submitting", so a reload fed the model a false premise it then repeated to the candidate.
+
+- **`sessionStorage`, not `localStorage`:** per-tab working state that should not outlive the tab, and two tabs on one interview are two attempts rather than a shared clock.
+- **Cleared on submit and on "Change answer"**, or re-editing resumes a start from before the first attempt and reports both.
+- **A stored start in the future is ignored** — a clock change should not produce a negative duration.
+- **Every storage access degrades to in-memory.** Safari throws in private mode, and a timer is never worth failing a page for.
+
 ## Voice answers (dictation)
 
 `frontend/src/hooks/use-dictation.ts` — the browser's own recogniser (Web Speech API), so it costs **zero provider requests** against a ceiling of 20/day. Speech-to-text on the way in, text everywhere after: `submit_answer` still receives text and nothing downstream knows the answer was spoken.
