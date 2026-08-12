@@ -49,6 +49,9 @@ function requestFor(
 ): NextRequest {
   const headers = new Headers();
   if (origin) headers.set("origin", origin);
+  // A real request always carries Host, and it is what the origin check
+  // compares against -- see the container case below.
+  headers.set("host", "localhost:3000");
   const jar = Object.entries(cookies)
     .map(([k, v]) => `${k}=${v}`)
     .join("; ");
@@ -267,6 +270,30 @@ describe("refresh on 401", () => {
 // -- Everything else it must not break --------------------------------------------
 
 describe("pass-through", () => {
+  it("accepts a request whose URL origin differs from the browser's", async () => {
+    // The bug that only running the stack could find. Next's standalone server
+    // builds request.url from the HOSTNAME environment variable, which Docker
+    // sets to the container id -- so the URL's origin was
+    // http://<container-id>:3000 while the browser's Origin said
+    // http://localhost:3000, and every single request was refused with a 403.
+    //
+    // A test that constructs the request with a matching URL cannot see this,
+    // which is exactly why the original passed. This one forces them apart.
+    fetchMock.mockResolvedValueOnce(json({ id: 1 }));
+    const headers = new Headers({
+      origin: "http://localhost:3000",
+      host: "localhost:3000",
+    });
+    const request = new NextRequest("http://4987482a5832:3000/api/bff/users/me", {
+      headers,
+    });
+
+    const response = await GET(request, context("users/me"));
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
   it("refuses a cross-origin request", async () => {
     const response = await POST(
       requestFor("users/me", { method: "POST", origin: "https://evil.test" }),
@@ -321,7 +348,7 @@ describe("pass-through", () => {
   it("keeps the query string", async () => {
     fetchMock.mockResolvedValueOnce(json({ items: [] }));
     const request = new NextRequest(`${ORIGIN}/api/bff/interviews?page=2&size=10`, {
-      headers: new Headers({ origin: ORIGIN }),
+      headers: new Headers({ origin: ORIGIN, host: "localhost:3000" }),
     });
 
     await GET(request, context("interviews"));

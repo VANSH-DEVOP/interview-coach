@@ -99,14 +99,31 @@ export function tokensIn(body: unknown): { access_token: string; refresh_token: 
  * the second layer rather than the only one — and the cheap kind, since a
  * browser will not let a page forge `Origin`.
  *
- * Same-origin requests from older browsers may send no Origin at all on GET,
- * so an absent header is allowed and only a *mismatched* one is refused.
+ * **Compared against the `Host` header, not against `request.url`.** That was
+ * the first version and it refused every request once the app ran in a
+ * container: Next's standalone server builds `request.url` from the `HOSTNAME`
+ * environment variable, which Docker sets to the container id, so the URL's
+ * origin was `http://4987482a5832:3000` while the browser's was
+ * `http://localhost:3000`. Unit tests could not see it — they construct the
+ * request with a URL that matches by definition — and it only appeared when the
+ * whole stack ran.
+ *
+ * `Host` is what the client actually addressed, which is the thing an `Origin`
+ * has to agree with. Scheme is not compared because `Host` carries none; the
+ * host and port are what a cross-site attacker cannot fake.
+ *
+ * Same-origin requests from older browsers may send no Origin at all on GET, so
+ * an absent header is allowed and only a *mismatched* one is refused.
  */
 export function isSameOrigin(request: NextRequest): boolean {
   const origin = request.headers.get("origin");
   if (!origin) return true;
+
+  const host = request.headers.get("host");
+  if (!host) return false;
+
   try {
-    return new URL(origin).origin === new URL(request.url).origin;
+    return new URL(origin).host === host;
   } catch {
     return false;
   }
