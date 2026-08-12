@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   Pencil,
   SkipForward,
@@ -21,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { useDictation } from "@/hooks/use-dictation";
+import { clearClock, readOrStartClock } from "@/lib/question-clock";
 import { useSpeech } from "@/hooks/use-speech";
 
 /** Seconds as m:ss, or plain seconds under a minute. */
@@ -29,6 +31,7 @@ function formatDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
 }
+
 
 export default function InterviewSessionPage() {
   const router = useRouter();
@@ -136,11 +139,14 @@ export default function InterviewSessionPage() {
     isInProgress && questions.length > 0 && answeredCount === 0,
   );
 
-  // Restart the clock whenever a different question becomes active.
+  // Pick up the clock whenever a different question becomes active -- resuming
+  // the stored start if there is one, so a reload does not restart it.
   useEffect(() => {
-    questionStartedAt.current = Date.now();
-    setElapsed(0);
-  }, [activeQuestion?.id]);
+    if (!activeQuestion?.id) return;
+    const startedAt = readOrStartClock(sessionId, activeQuestion.id);
+    questionStartedAt.current = startedAt;
+    setElapsed(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+  }, [activeQuestion?.id, sessionId]);
 
   // Tick only while an unanswered question is on screen.
   useEffect(() => {
@@ -181,8 +187,10 @@ export default function InterviewSessionPage() {
     setDictated(false);
     setIsEditing(true);
     setError(null);
-    // The clock restarts: the reported duration should describe the new attempt.
-    questionStartedAt.current = Date.now();
+    // The clock restarts: the reported duration should describe the new attempt,
+    // so the stored start is dropped before a fresh one is taken.
+    clearClock(sessionId, activeQuestion.id);
+    questionStartedAt.current = readOrStartClock(sessionId, activeQuestion.id);
     setElapsed(0);
   }
 
@@ -235,6 +243,9 @@ export default function InterviewSessionPage() {
             }
           : prev
       );
+      // The question is answered, so its clock is spent. Left behind, a later
+      // "Change answer" would resume a start from before the first attempt.
+      clearClock(sessionId, activeQuestion.id);
       // Reload to pick up any follow-up the answer produced, then move on --
       // forwards. This used to move to the first unanswered question anywhere
       // in the list, which reads as "submit, and get thrown back to the one you
@@ -247,6 +258,21 @@ export default function InterviewSessionPage() {
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  /**
+   * Step back one question.
+   *
+   * Its absence was a real gap rather than a missing nicety: skipping moves
+   * forwards, and with nothing going the other way a skipped question could
+   * never be reached again -- "skipped" meant "skipped for ever". The strip
+   * above covers jumping to a specific one; this covers the common case.
+   */
+  function handlePrevious() {
+    setDraft("");
+    setError(null);
+    setIsEditing(false);
+    setActiveIndex((i) => Math.max(i - 1, 0));
   }
 
   function handleNext() {
@@ -365,6 +391,57 @@ export default function InterviewSessionPage() {
                 <Badge variant="outline">{activeQuestion.question_type.replace("_", " ")}</Badge>
               </div>
             </div>
+            {/*
+              A jumpable index of the whole interview.
+
+              Without it, "skipped" was effectively permanent: skipping moves
+              forwards, nothing moved back, and a question passed over was
+              unreachable and invisible. Reachable is the Previous button;
+              *visible* is this -- a skipped question should not be something
+              the candidate has to remember.
+            */}
+            {questions.length > 1 && (
+              <div
+                className="flex flex-wrap gap-1.5 pt-3"
+                role="group"
+                aria-label="Jump to a question"
+              >
+                {questions.map((question, index) => {
+                  const answered = question.answer !== null;
+                  const skipped = question.skipped && !answered;
+                  const current = index === activeIndex;
+                  return (
+                    <button
+                      key={question.id}
+                      type="button"
+                      onClick={() => {
+                        setDraft("");
+                        setError(null);
+                        setIsEditing(false);
+                        setActiveIndex(index);
+                      }}
+                      aria-current={current ? "true" : undefined}
+                      aria-label={`Question ${index + 1}${
+                        answered ? ", answered" : skipped ? ", skipped" : ", unanswered"
+                      }`}
+                      className={[
+                        "h-7 w-7 rounded-md border text-xs tabular-nums transition-colors",
+                        current
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : answered
+                            ? "border-transparent bg-muted text-muted-foreground hover:bg-muted/80"
+                            : skipped
+                              ? "border-dashed border-muted-foreground/60 text-muted-foreground hover:bg-muted"
+                              : "border-border hover:bg-muted",
+                      ].join(" ")}
+                    >
+                      {index + 1}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
             <CardDescription className="pt-2 text-base text-foreground">
               {activeQuestion.content}
             </CardDescription>
@@ -487,6 +564,12 @@ export default function InterviewSessionPage() {
                 <Button variant="outline" onClick={handleSkip} disabled={isSkipping}>
                   <SkipForward className="h-4 w-4" aria-hidden />
                   {isSkipping ? "Skipping…" : activeQuestion.skipped ? "Skipped" : "Skip"}
+                </Button>
+              )}
+              {activeIndex > 0 && (
+                <Button variant="outline" onClick={handlePrevious}>
+                  <ChevronLeft className="h-4 w-4" aria-hidden />
+                  Previous
                 </Button>
               )}
               {activeIndex < questions.length - 1 && (
