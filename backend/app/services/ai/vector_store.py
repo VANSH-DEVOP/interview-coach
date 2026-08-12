@@ -26,6 +26,7 @@ vectors, and redaction stays where `masking.py` put it.
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -308,6 +309,27 @@ class ChromaVectorStore(VectorStore):
 # Global vector store instance (initialized lazily)
 _vector_store: VectorStore | None = None
 
+# Serialises construction, and it is not optional.
+#
+# `chromadb.PersistentClient` is not safe to build concurrently: two cold calls
+# for the same path race on chromadb's own `SharedSystemClient` registry, and
+# the losers see a half-started system. Reproduced with four threads and a
+# barrier, which produced exactly the three failures seen in production --
+# `'RustBindingsAPI' object has no attribute 'bindings'`, `Could not connect to
+# tenant default_tenant`, and a `KeyError` on the path.
+#
+# Worse than a one-off failure: the attempt that fails calls chromadb's
+# `_release_system`, which stops and unregisters the system the *winner* is
+# using. So one unlucky moment leaves the registry poisoned and every later
+# attempt in the process fails too -- which is why RAG stayed off until a
+# restart rather than recovering.
+#
+# FastAPI is what makes this reachable: `get_rag_service` is a sync dependency,
+# so it runs in the threadpool, and two requests arriving together at cold
+# start land in two threads. `functools.lru_cache` does not help -- it prevents
+# repeat work after a call returns, not two threads entering the body at once.
+_vector_store_lock = threading.Lock()
+
 
 def get_vector_store(persist_directory: Path | str | None = None) -> VectorStore:
     """Get or create the global vector store instance.
@@ -319,6 +341,14 @@ def get_vector_store(persist_directory: Path | str | None = None) -> VectorStore
         Singleton VectorStore instance.
     """
     global _vector_store
-    if _vector_store is None:
-        _vector_store = ChromaVectorStore(persist_directory)
+    # Read first, without the lock: after construction this is the hot path and
+    # every retrieval would otherwise queue behind a mutex it never needs.
+    if _vector_store is not None:
+        return _vector_store
+
+    with _vector_store_lock:
+        # Checked again inside the lock: the thread that waited here may have
+        # been waiting for the one that built it.
+        if _vector_store is None:
+            _vector_store = ChromaVectorStore(persist_directory)
     return _vector_store

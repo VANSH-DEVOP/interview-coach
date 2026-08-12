@@ -153,3 +153,71 @@ def test_the_courier_refuses_to_embed_a_query() -> None:
 def test_the_courier_refuses_a_text_it_was_not_given() -> None:
     with pytest.raises(VectorStoreError, match="not given"):
         _PrecomputedEmbeddings({"known": _ALPHA}).embed_documents(["unknown"])
+
+
+# -- Concurrent construction ------------------------------------------------------
+
+
+def test_only_one_thread_ever_builds_the_store(monkeypatch, tmp_path):
+    """`chromadb.PersistentClient` is not safe to build concurrently.
+
+    Two cold calls for the same path race on chromadb's own `SharedSystemClient`
+    registry and the losers see a half-started system. In production that
+    produced `'RustBindingsAPI' object has no attribute 'bindings'`, `Could not
+    connect to tenant default_tenant`, and a `KeyError` on the path -- all three
+    reproduced locally with four threads and a barrier.
+
+    The failure is worse than a one-off: the losing attempt calls chromadb's
+    `_release_system`, which stops the system the winner is using, so the
+    registry stays poisoned and RAG is off until the process restarts.
+
+    FastAPI is what makes it reachable -- `get_rag_service` is a sync dependency
+    and therefore runs in the threadpool, so two requests arriving together at
+    cold start land in two threads. `lru_cache` does not prevent that: it stops
+    repeat work *after* a call returns, not two threads entering the body.
+    """
+    import threading
+    import time
+
+    from app.services.ai import vector_store as module
+
+    entered: list[int] = []
+
+    class _Recording:
+        def __init__(self, *args, **kwargs) -> None:
+            entered.append(1)
+            # Widen the window the real client already has. Without the lock
+            # every thread is inside here at once, which is the race.
+            time.sleep(0.05)
+
+    monkeypatch.setattr(module, "ChromaVectorStore", _Recording)
+    monkeypatch.setattr(module, "_vector_store", None)
+
+    results: list[object] = []
+
+    def build() -> None:
+        results.append(module.get_vector_store(tmp_path))
+
+    threads = [threading.Thread(target=build) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert len(entered) == 1, f"constructed {len(entered)} times; the lock is not holding"
+    assert len(results) == 4
+    assert all(result is results[0] for result in results)
+    module._vector_store = None
+
+
+def test_the_store_is_returned_without_taking_the_lock_once_built(monkeypatch, tmp_path):
+    """The hot path. Every retrieval would otherwise queue behind a mutex it
+    does not need."""
+    from app.services.ai import vector_store as module
+
+    sentinel = object()
+    monkeypatch.setattr(module, "_vector_store", sentinel)
+    # A lock that would raise if taken.
+    monkeypatch.setattr(module, "_vector_store_lock", None)
+
+    assert module.get_vector_store(tmp_path) is sentinel

@@ -173,6 +173,10 @@ The ordering in `ResumeService._index` is deliberate: **save chunks, then embed,
 
 `replace_for_resume` deletes then inserts rather than upserting by ordinal — re-chunking can produce *fewer* pieces, and updating in place would leave the previous run's tail behind as rows matching no part of the document. `InterviewService.create()` generates questions (RAG-retrieved resume context when available), `submit_answer()` may append a `follow_up` question linked by `parent_question_id`, `complete()` runs the evaluator and writes a `COMPLETED` `EvaluationReport`. `reevaluate()` regenerates a report for an already-completed session.
 
+**`get_vector_store()` holds a lock, and it is not decoration.** `chromadb.PersistentClient` is unsafe to build concurrently: two cold calls for the same path race on chromadb's own `SharedSystemClient` registry and the losers see a half-started system — `'RustBindingsAPI' object has no attribute 'bindings'`, `Could not connect to tenant default_tenant`, `KeyError` on the path. Worse, the failing attempt calls chromadb's `_release_system`, which stops the system the *winner* is using, so the registry stays poisoned and **RAG is off for the rest of the process** rather than recovering.
+
+FastAPI is what makes it reachable: `get_rag_service` is a sync dependency, so it runs in the threadpool and two requests arriving together at cold start land in two threads. **`lru_cache` does not help** — it prevents repeat work after a call returns, not two threads entering the body at once. `tests/test_vector_store.py` pins it, and fails without the lock.
+
 ChromaDB persists to `CHROMA_PATH` (default `/var/lib/interviewpilot/chroma`, backed by the `chroma_data` Docker volume). `get_rag_service()` is `@lru_cache`d, so tests that vary settings must call `get_rag_service.cache_clear()`. Outside Docker that default path is usually unwritable — RAG then logs a warning and disables itself, so set `CHROMA_PATH` to something local when running the backend directly.
 
 ### The vector store
