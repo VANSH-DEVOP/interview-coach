@@ -72,13 +72,40 @@ export default function InterviewSessionPage() {
   const questionStartedAt = useRef<number>(Date.now());
   const [elapsed, setElapsed] = useState(0);
 
+  /**
+   * True once the first load has chosen where to start.
+   *
+   * `load()` used to reposition on *every* call, and it is called after every
+   * answer and every skip -- so answering question 4 threw the reader back to
+   * question 1 if question 1 had been skipped. Refetching and deciding what to
+   * look at are separate concerns, and only the first load gets to decide.
+   */
+  const hasPositioned = useRef(false);
+
   const load = useCallback(async () => {
     const data = await api.get<InterviewSessionDetail>(`/interviews/${sessionId}`);
     setSession(data);
-    // Jump to the first unanswered question.
-    const firstUnanswered = data.questions.findIndex((q) => q.answer === null);
-    setActiveIndex(firstUnanswered === -1 ? data.questions.length - 1 : firstUnanswered);
+    if (!hasPositioned.current) {
+      hasPositioned.current = true;
+      // Resuming an interview should open where the work is, not at the top.
+      const firstUnanswered = data.questions.findIndex((q) => q.answer === null);
+      setActiveIndex(firstUnanswered === -1 ? data.questions.length - 1 : firstUnanswered);
+    }
+    return data;
   }, [sessionId]);
+
+  /**
+   * The next question worth looking at, searching *forwards only*.
+   *
+   * Forwards is the whole point: a reader who has just answered or skipped is
+   * moving through the interview, and sending them backwards to something they
+   * passed over deliberately is what made this annoying. If nothing later is
+   * unanswered, stay where we are rather than wrapping round.
+   */
+  const advance = useCallback((all: Question[], from: number) => {
+    const next = all.findIndex((q, i) => i > from && q.answer === null);
+    setActiveIndex(next === -1 ? Math.min(from + 1, all.length - 1) : next);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -133,8 +160,13 @@ export default function InterviewSessionPage() {
       await api.post(
         `/interviews/${sessionId}/questions/${activeQuestion.id}/skip`,
       );
-      await load();
-      handleNext();
+      // Advance from where the reader is, using the freshly loaded list. The
+      // old order -- load() then handleNext() -- incremented from whatever
+      // position load() had just reset to, which is why skipping jumped.
+      const data = await load();
+      setDraft("");
+      setIsEditing(false);
+      advance(data.questions, activeIndex);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Unable to skip this question.");
     } finally {
@@ -203,7 +235,13 @@ export default function InterviewSessionPage() {
             }
           : prev
       );
-      await load();
+      // Reload to pick up any follow-up the answer produced, then move on --
+      // forwards. This used to move to the first unanswered question anywhere
+      // in the list, which reads as "submit, and get thrown back to the one you
+      // skipped ten minutes ago".
+      const index = activeIndex;
+      const data = await load();
+      advance(data.questions, index);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Unable to submit your answer.");
     } finally {

@@ -16,14 +16,23 @@ const securityHeaders = [
   // Paths here contain session and report ids. Send the origin to other sites
   // and nothing at all when leaving HTTPS.
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-  // Features this app does not use. `microphone=()` has to change if voice
-  // interviews land -- they are on the roadmap and they need it.
+  // Features this app does not use, denied to the page and to anything it
+  // embeds.
+  //
+  // `microphone=(self)` is the exception, and it is not optional: dictation
+  // uses the Web Speech API, which Chrome gates behind exactly this policy.
+  // With `microphone=()` the browser refuses before it ever prompts, so the
+  // button reported "microphone access was blocked" and allowing it in site
+  // settings changed nothing -- the denial was this header, not the user.
+  //
+  // The comment here previously said this "has to change if voice interviews
+  // land". They landed, and it did not.
   {
     key: "Permissions-Policy",
     value:
       "accelerometer=(), autoplay=(), camera=(), display-capture=(), " +
       "encrypted-media=(), geolocation=(), gyroscope=(), magnetometer=(), " +
-      "microphone=(), midi=(), payment=(), usb=()",
+      "microphone=(self), midi=(), payment=(), usb=()",
   },
   // Severs window.opener, so a page opened from here cannot reach back in.
   { key: "Cross-Origin-Opener-Policy", value: "same-origin" },

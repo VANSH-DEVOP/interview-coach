@@ -61,9 +61,9 @@ _ONE_YEAR = 60 * 60 * 24 * 365
 # Features this application has no use for. An empty allowlist denies the
 # feature to the page and to everything it embeds.
 #
-# `microphone=()` will have to change if voice interviews land -- they are on
-# the Phase 4 roadmap and they need it. Better to have to notice than to have
-# left it open in advance.
+# `microphone=()` stays denied here and is granted only by the *frontend*
+# (next.config.mjs), which is where dictation runs. This process serves JSON;
+# a permissions policy on an API response governs no page and grants nothing.
 _PERMISSIONS_POLICY = (
     "accelerometer=(), autoplay=(), camera=(), display-capture=(), "
     "encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), "

@@ -174,3 +174,28 @@ describe("failures", () => {
     expect(FakeRecognition.last!.aborted).toBe(true);
   });
 });
+
+describe("recovering from a refusal", () => {
+  it("can be started again after an error", async () => {
+    // The second half of the reported failure: the microphone was blocked by a
+    // Permissions-Policy header, and after the user allowed it in site settings
+    // the button still did nothing. `start()` returns early while an instance
+    // is held, so an error that did not also fire `onend` left the ref set and
+    // the control dead for the rest of the page's life.
+    install();
+    const { result } = renderHook(() => useDictation(vi.fn()));
+    await waitFor(() => expect(result.current.supported).toBe(true));
+
+    act(() => result.current.start());
+    const first = FakeRecognition.last;
+    act(() => FakeRecognition.last!.onerror?.({ error: "not-allowed" }));
+    expect(result.current.error).toMatch(/blocked/i);
+
+    act(() => result.current.start());
+
+    expect(FakeRecognition.last).not.toBe(first);
+    expect(result.current.listening).toBe(true);
+    // And the stale message is gone, rather than sitting under a live mic.
+    expect(result.current.error).toBeNull();
+  });
+});

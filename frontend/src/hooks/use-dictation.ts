@@ -157,6 +157,15 @@ export function useDictation(onFinalText: (text: string) => void): Dictation {
     };
 
     instance.onerror = (event) => {
+      // Released here as well as in `onend`, and that is the fix for the second
+      // half of "it said blocked, and then it still did nothing after I allowed
+      // it". `start()` returns early while this ref is set, so a recogniser that
+      // errors without firing `onend` -- which some implementations do -- leaves
+      // the button permanently dead. Clearing it in both places means the next
+      // press always gets a fresh instance.
+      recognition.current = null;
+      setListening(false);
+
       // "aborted" is what a deliberate stop looks like; it is not a failure and
       // must not be shown as one.
       if (event.error === "aborted") return;
