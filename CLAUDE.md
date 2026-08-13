@@ -353,6 +353,19 @@ It is a play button, not a mode: `speechSynthesis` renders **locally**, so unlik
 
 `HeuristicEvaluator` deliberately ignores timing: it scores on coverage and word depth, and inventing a pacing rule without a model behind it would be an arbitrary number dressed as judgement. There is a test that a 5-second and a 900-second answer score identically there.
 
+## Deploying
+
+`.env.production.example` is the deployment template — not `.env.example` with different numbers, but the list of values that must change or that behave differently once `ENVIRONMENT=production`.
+
+**`app/core/startup_checks.py` refuses to boot** on a development default in production: the repository's JWT signing key, a well-known Postgres password, a localhost `FRONTEND_BASE_URL` or `CORS_ORIGINS`, `DEBUG` on, or a plain-HTTP frontend. Every check is for a value that is *correct* in development and a hole in production, and whose failure mode is silent — a wrong value producing an obvious error needs no guard, because the error is the guard. Same reasoning as the `EMAIL_BACKEND='log'` refusal that predates it.
+
+**All problems are reported at once.** Failing on the first would mean fix, redeploy, discover the next — minutes each on a real deploy, and an easy way to stop halfway with a half-secured configuration.
+
+Two things the guard cannot fix, both stated at the top of the template:
+
+- **HTTPS is required.** Session cookies are `Secure` in production and browsers silently discard those over plain HTTP on any host but localhost — login appears to succeed and every request after it is unauthenticated. The guard catches an `http://` `FRONTEND_BASE_URL`, but it cannot see a missing certificate on the API.
+- **20 provider requests a day, for the whole account**, against ~23 for one complete interview. A public free-tier deployment is exhausted by its first visitor. It degrades rather than breaks — that is what the deterministic fallbacks are for — but it is not the product.
+
 ## Rate limiting
 
 `app/core/rate_limit.py` is a pure mechanism — fixed-window counters, no knowledge of routes or users. The wiring (`limit_by_ip`, `limit_by_user`) lives in `app/api/deps.py` with the rest of the DI, and **must stay there**: that module deliberately has no `from __future__ import annotations`, because FastAPI has to resolve `Annotated[User, Depends(...)]` at runtime. When these dependencies lived in `core/`, FastAPI silently reinterpreted `user` as a *query parameter* and every AI route answered 422.

@@ -13,6 +13,7 @@ from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.error_reporting import configure_error_reporting
 from app.core.logging import configure_logging
+from app.core.startup_checks import verify_production_config
 from app.db.session import engine
 from app.middleware.error_handler import register_exception_handlers
 from app.middleware.metrics import MetricsMiddleware
@@ -50,6 +51,10 @@ async def _open_queue(app: FastAPI) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
+    # Before anything is served, and before the queue or the database is
+    # touched: every check is a value that is correct in development and a hole
+    # in production, and each one leaves the application apparently working.
+    verify_production_config(get_settings())
     # Before the queue: connecting to Redis is the first thing that can fail,
     # and a reporter initialised after it would miss the failure it most wants.
     configure_error_reporting()

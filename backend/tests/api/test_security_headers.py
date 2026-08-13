@@ -14,6 +14,31 @@ from app.main import create_app
 
 
 @pytest.fixture
+def production(monkeypatch):
+    """Boot as production would, guard and all.
+
+    `verify_production_config` refuses to start on a development default, so a
+    test that only flips ENVIRONMENT no longer boots -- correctly. Supplying a
+    valid production configuration here is more honest than exempting the
+    guard: these tests assert production *behaviour*, and now they do it from a
+    configuration production would actually accept.
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production", raising=False)
+    monkeypatch.setattr(settings, "DEBUG", False, raising=False)
+    monkeypatch.setattr(settings, "JWT_SECRET_KEY", "x" * 64, raising=False)
+    monkeypatch.setattr(settings, "POSTGRES_PASSWORD", "a-generated-value", raising=False)
+    monkeypatch.setattr(
+        settings, "FRONTEND_BASE_URL", "https://interviewpilot.example", raising=False
+    )
+    monkeypatch.setattr(
+        settings, "CORS_ORIGINS", ["https://interviewpilot.example"], raising=False
+    )
+    monkeypatch.setattr(settings, "EMAIL_BACKEND", "smtp", raising=False)
+
+
+
+@pytest.fixture
 def anyio_backend():
     return "asyncio"
 
@@ -56,10 +81,9 @@ async def test_hsts_is_absent_outside_production(client):
     assert "strict-transport-security" not in (await client.get("/api/v1/health")).headers
 
 
-def test_hsts_is_sent_in_production(monkeypatch):
+def test_hsts_is_sent_in_production(production):
     from starlette.testclient import TestClient
 
-    monkeypatch.setattr(get_settings(), "ENVIRONMENT", "production", raising=False)
     with TestClient(create_app()) as production_client:
         header = production_client.get("/api/v1/health").headers[
             "strict-transport-security"
@@ -89,10 +113,9 @@ def test_the_docs_page_gets_a_policy_that_lets_it_load(monkeypatch):
     assert "frame-ancestors 'none'" in policy
 
 
-def test_docs_are_gone_in_production_and_so_is_the_loose_policy(monkeypatch):
+def test_docs_are_gone_in_production_and_so_is_the_loose_policy(production):
     from starlette.testclient import TestClient
 
-    monkeypatch.setattr(get_settings(), "ENVIRONMENT", "production", raising=False)
     with TestClient(create_app()) as production_client:
         response = production_client.get("/docs")
 

@@ -199,6 +199,24 @@ answer was "no" rather than "not yet".
   the document's own declared structure. Revisit only off the free tier, and
   only with the benchmark as the judge.
 ---
+## Deployment readiness (2026-08-13)
+
+Code complete; the remaining work is configuration, and `.env.production.example`
+plus `app/core/startup_checks.py` now carry it. The guard refuses to boot on a
+development default in production and reports every problem at once.
+
+Two blockers it cannot solve, both real:
+
+- **HTTPS.** `Secure` session cookies are discarded by browsers over plain HTTP
+  on any host but localhost, so nothing authenticates. Not polish -- a hard
+  prerequisite introduced by the BFF.
+- **The provider ceiling.** 20 requests a day for the whole account against ~23
+  for one complete interview, so a public free-tier deployment is exhausted by
+  its first visitor. Paid tier, or `AI_PROVIDER=openai` at a local model.
+
+Rotate the Gemini key before enabling billing, at which point a key that has
+been logged stops being hygiene and becomes a spend.
+
 ## Suggested order
 
 ~~1. Phase 0 in full. 2. Follow-up resume context + async evaluation. 3. CI with
