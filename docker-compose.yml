@@ -4,6 +4,21 @@ name: interviewpilot
 # configuration, differing only in the command they run. Anchored so the two
 # cannot drift -- a worker pointed at a different database or a different Gemini
 # model would produce reports nobody could explain.
+# Everything in the repository-root `.env` is passed to the backend and the
+# worker, and the `environment:` block below then overrides the handful of values
+# that must differ inside a container.
+#
+# This is an env_file rather than another thirty entries in that block, because
+# the block was the bug: it listed sixteen variables, so SENTRY_DSN,
+# LANGSMITH_*, METRICS_*, AI_PROVIDER, the quotas and the S3 settings could be
+# set in `.env` and simply never reach the process. Nothing reported that --
+# each of those features is off by default, so the symptom was a setting that
+# appeared to do nothing.
+#
+# Compose gives `environment:` precedence over `env_file:`, which is what keeps
+# POSTGRES_HOST, POSTGRES_PORT, REDIS_URL, CHROMA_PATH and STORAGE_LOCAL_PATH
+# pointing at container addresses even though `.env` holds host-side values for
+# the first two.
 x-backend-env: &backend-env
   ENVIRONMENT: ${ENVIRONMENT:-local}
   DEBUG: ${DEBUG:-true}
@@ -93,6 +108,9 @@ services:
   backend:
     build: ./backend
     restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
     environment: *backend-env
     volumes:
       # Resume blobs live OUTSIDE the application code, on a named volume.
@@ -114,6 +132,9 @@ services:
     # `alembic upgrade head` -- two processes racing the same migration on
     # startup is a deadlock waiting to happen, and backend already runs it.
     command: ["arq", "app.worker.WorkerSettings"]
+    env_file:
+      - path: .env
+        required: false
     environment: *backend-env
     # `arq --check` exits non-zero when the heartbeat key is missing from Redis,
     # which is the same signal /health reports. Without it a dead worker is
