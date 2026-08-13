@@ -91,7 +91,11 @@ Scaffolding exists; the feature does not.
   **One ignore, `PYSEC-2026-311` (chromadb)**, with a reachability argument and an end condition: it is a pre-auth RCE in the Chroma *server's* HTTP API, and this project embeds chromadb in-process with no HTTP surface. No fixed version exists, so the alternative was a permanently red build. Remove it if `vector_store.py` ever moves to `chromadb.HttpClient`.
 ### Security (P1)
 - [x] **Rate limiting.** (`66252e9`) **Pulled forward into Phase 1** — the free tier turned out to be **20 requests/day**, not 60/min, and live verification exhausted it. `app/core/rate_limit.py` (fixed-window, no new dependency); auth keyed by IP, AI/upload keyed by user; 429 in the standard envelope with `Retry-After`. Per-process and burst-tolerant at window boundaries — both documented in the module.
-  - [ ] **Follow-up:** the defaults (20 AI req/user/hour) sit *above* the account's 20/day ceiling, so they bound one user's abuse but not account exhaustion. Lower them, or move off the free tier.
+  - [x] ~~**Follow-up:** the defaults sit *above* the account's 20/day ceiling.~~ ✅ 2026-08-13 — ai 20/hour → 10/day, upload 10/hour → 2/day, interview creates 5 → 2/day.
+    **The window was the structural half**, not the count: 20/hour is 480/day, so a per-hour limit cannot bound a per-day budget at any value. Both AI and upload windows are now a day. Auth is untouched — it guards credential stuffing, and a daily window there would lock a legitimate user out for a day over a few typos.
+    Measured rather than guessed: one full 5-question interview costs ~23 provider calls (9 embeddings for the upload, 2-3 to create, 2 per answer, 1 to evaluate) against a ceiling of 20/day. **One interview already exceeds the entire daily budget**, so no per-user number makes it fit — these bound one user's share.
+    Also found doing it: the `upload` scope, not `ai`, is where the quota actually goes. Lowering `RATE_LIMIT_AI_REQUESTS` alone — which is what this item literally asked for — would have left the largest consumer untouched.
+    Still open below: an **account-wide** budget, which is the only thing that can bound a shared quota.
   - [x] **Follow-up:** ~~move counters to Redis before running more than one worker.~~ ✅ 2026-08-10 — shared counters when `REDIS_URL` is set, in-process otherwise, and the degradation is counted and surfaced at `/health`. See "Shared rate-limit counters" below.
 - [x] ~~**httpOnly cookie BFF for tokens.**~~ ✅ 2026-08-11 — `frontend/src/app/api/bff/[...path]/route.ts`. The browser no longer holds a token: sessions are httpOnly cookies and `api-client.ts` sends no `Authorization` header at all.
   **Every** call is proxied, not just the auth ones — anything going straight to the API would need a header, which means JavaScript would need the token, which is the thing being removed.
@@ -102,12 +106,20 @@ Scaffolding exists; the feature does not.
   Still open, deliberately: the API itself continues to accept Bearer tokens, so a direct-to-API client remains possible. Locking that down means moving auth into the proxy's trust boundary, which is a separate decision.
 - [x] **The Gemini API key is written to the logs in cleartext.** `GeminiClient` passes the key as a `?key=` query param, and httpx logs the full URL at INFO — so every AI call prints the key (seen in the backend container logs on 2026-07-27). Send it as the `x-goog-api-key` header instead, and/or set `logging.getLogger("httpx").setLevel(WARNING)`. Rotate the key that has already been logged.
   → **Done** in both `GeminiClient` and `EmbeddingService`; httpx/httpcore pinned to WARNING. Verified: at root DEBUG the key no longer appears in captured logs.
-  → **Rotating the logged key: hygiene, not an incident.** Re-assessed 2026-08-11 after the urgency was challenged, and the challenge was right. What was actually verified rather than assumed:
-    - **Never committed.** Every commit on every branch searched for the literal key and for any `AIza`-shaped string: nothing. The public GitHub repo is not a vector.
-    - **No longer in container logs.** Zero matches; the backend container was recreated and the old output is gone.
-    - **Lives only in gitignored `.env` files** on the developer's machine.
-    So the real exposure was terminal and container output on one laptop in July, before `e0e1ad6`. And the key is free-tier, capped at 20 requests/day — someone who steals it burns a day's quota, which is an annoyance rather than a loss.
-    **The condition that changes this: billing.** A leaked key on a billed project is a financial liability *retroactively* — the key that leaked in July is the key that gets charged. Rotate before enabling billing, before deploying anywhere multi-user, or before sharing logs or a screen. Until then, do it when convenient.
+  → ✅ **Rotated.** Confirmed by the maintainer on 2026-08-13: the key in use is
+    not the one that was logged. The `?key=` leak itself was fixed in `e0e1ad6`
+    and httpx/httpcore are pinned to WARNING, so there is nothing left to
+    re-expose. Keep it that way before enabling billing -- a key that reaches a
+    log on a *billed* project stops being hygiene and becomes a spend.
+
+    **Kept for the reasoning rather than the task.** This sat at the top of this
+    backlog for weeks as the single most urgent item, on the strength of "a
+    credential was logged once" -- ranked on the *category* of the problem
+    rather than on what an attacker actually gained. When it was finally
+    checked: never committed to git, absent from container logs, free-tier with
+    a 20/day cap, so the worst case was a stranger burning a day's quota. Five
+    minutes of checking would have re-ranked it at any point in those weeks.
+    Rank on blast radius, not on the word "credential".
 - [x] ~~**CSP + security headers.**~~ ✅ 2026-08-11 — `backend/app/middleware/security_headers.py` (API) and `frontend/src/middleware.ts` (nonce CSP for the pages).
   Two surfaces, deliberately different: the API serves JSON and gets `default-src 'none'`; the frontend gets a nonce-based policy with `strict-dynamic` and no `'unsafe-inline'` for scripts.
   **Cost, measured before choosing:** the nonce forces `dynamic = "force-dynamic"` on the root layout, turning 11 prerendered routes into server-rendered ones. Required, not incidental — a prerendered page's inline hydration scripts are baked at build time with no nonce, so `strict-dynamic` blocks every script and the page is blank *with a 200 and correct-looking HTML*. Worth it because the tokens are in JS-readable cookies, so an injected script takes the session; the routes it costs are auth-gated shells that fetch client-side, on a single container with no CDN. **Revisit if a CDN appears or once the httpOnly BFF lands.**
@@ -214,8 +226,10 @@ Two blockers it cannot solve, both real:
   for one complete interview, so a public free-tier deployment is exhausted by
   its first visitor. Paid tier, or `AI_PROVIDER=openai` at a local model.
 
-Rotate the Gemini key before enabling billing, at which point a key that has
-been logged stops being hygiene and becomes a spend.
+The Gemini key has been rotated, so the logged one is dead. Keep it that way
+before enabling billing: the `?key=` leak is fixed (`e0e1ad6`) and third-party
+loggers are pinned to WARNING, but a key that reaches a log on a *billed*
+project stops being hygiene and becomes a spend.
 
 ## Suggested order
 
@@ -237,11 +251,11 @@ Items 5-7 of the original list are done; what is left is below, re-ordered
 3. **httpOnly cookie BFF.** The largest genuine security gap left, and the one
    place the code itself admits it shipped an MVP (`api-client.ts:35`). It is
    also what would let the frontend CSP relax back to static prerendering.
-4. **Rotate the Gemini API key** — *demoted from item 1.* It was listed as the
+~~4. Rotate the Gemini API key.~~ ✅ **done, 2026-08-13.** It was listed as the
    most urgent thing here for weeks on the strength of "a key was logged once",
-   without anyone checking what that exposed. It exposed one laptop's terminal
-   output, for a free-tier key capped at 20 requests a day. Do it before
-   enabling billing; see the Security section for the evidence.
+   without anyone checking what that exposed — and it had in fact already been
+   rotated for much of that time. See the Security section for the reasoning
+   worth keeping.
 
 ~~5. Error reporting (Sentry). 6. AI-call telemetry. 7. CSP, per-user quotas,
 coverage threshold, dependency scanning, config hygiene, README.~~ — all
@@ -435,7 +449,7 @@ What the design turns on:
 The same cron is now the obvious home for the expired-token pruning below.
 
 ### Operational follow-ups (not code)
-- **Rotate the Gemini API key** — low urgency, and verified as such on 2026-08-11 rather than assumed. Never committed to git; no longer present in container logs; free-tier and capped at 20 requests/day. The exposure was one laptop's terminal output in July. **Do it before enabling billing on the project**, which would make the old leak a financial liability retroactively.
+- ~~**Rotate the Gemini API key.**~~ ✅ 2026-08-13 — done; the key in use is not the one that was logged, and the `?key=` leak that caused it was fixed in `e0e1ad6`.
 - **Pick an email provider before any real deployment.** `EMAIL_BACKEND=log` is
   the default and is *refused* in production, so a production start will fail
   until `SMTP_HOST` and credentials are set. That is deliberate — the
