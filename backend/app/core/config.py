@@ -279,13 +279,46 @@ class Settings(BaseSettings):
     # Credential stuffing defence. Per client IP.
     RATE_LIMIT_AUTH_ATTEMPTS: int = 10
     RATE_LIMIT_AUTH_WINDOW_SECONDS: int = 300
-    # Quota defence. Per user. Every one of these requests costs a Gemini call,
-    # and the free tier allows only 20/day across the whole deployment.
-    RATE_LIMIT_AI_REQUESTS: int = 20
-    RATE_LIMIT_AI_WINDOW_SECONDS: int = 3600
-    # Upload abuse / storage growth. Per user.
-    RATE_LIMIT_UPLOAD_REQUESTS: int = 10
-    RATE_LIMIT_UPLOAD_WINDOW_SECONDS: int = 3600
+    # Quota defence. Per user, and measured against the provider budget rather
+    # than picked for feel.
+    #
+    # **The window is a day, and that is the structural half of this.** These
+    # were 20/hour and 10/hour, which cannot bound a *daily* budget at any
+    # count: 20/hour is 480/day. A limit whose window is shorter than the
+    # budget's period does not constrain the budget, it only smooths the rate.
+    #
+    # What one interview actually costs, in provider calls:
+    #
+    #   resume upload        1 embedding per chunk      ~9
+    #   interview create     1 embedding + 1 generate    2-3
+    #   answer w/ follow-up  1 embedding + 1 generate    2   (x5)
+    #   complete / evaluate  1 generate                  1
+    #                                                   ---
+    #   one full 5-question interview                    23
+    #
+    # against a free-tier ceiling of **20 requests a day for the whole
+    # account**. So one complete interview already exceeds the entire daily
+    # budget, and these numbers cannot make it fit -- they exist so that one
+    # user cannot exhaust the account *faster than their fair share*, not so
+    # the sums work. The embedding cache is what makes a second interview on
+    # the same resume affordable.
+    #
+    # Counted in *requests*, not provider calls: one interview is 7 AI-scope
+    # requests (create, five answers, complete), so 10 allows an interview plus
+    # a regenerate or a re-evaluation.
+    #
+    # Raise all three when off the free tier -- they are deliberately tight for
+    # a 20/day budget and will otherwise be the first thing you hit.
+    RATE_LIMIT_AI_REQUESTS: int = 10
+    RATE_LIMIT_AI_WINDOW_SECONDS: int = 60 * 60 * 24
+    # Upload abuse, storage growth, and the *largest* consumer of the provider
+    # budget -- indexing costs one embedding call per chunk, roughly nine for a
+    # normal resume. Two uploads is already eighteen of the twenty.
+    #
+    # Worth knowing this scope, not the `ai` one, is where the quota actually
+    # goes: lowering RATE_LIMIT_AI_REQUESTS alone would have left it untouched.
+    RATE_LIMIT_UPLOAD_REQUESTS: int = 2
+    RATE_LIMIT_UPLOAD_WINDOW_SECONDS: int = 60 * 60 * 24
     # Interviews one user may start per day. A *consumption* cap, so it is a
     # counter rather than a row count: starting an interview spends a provider
     # call, and deleting the session afterwards cannot un-spend it. Counting
@@ -294,7 +327,9 @@ class Settings(BaseSettings):
     #
     # The hourly `ai` limit above bounds bursts; this bounds the day, which the
     # hourly one does not (20/hour is 480/day).
-    RATE_LIMIT_INTERVIEW_CREATES: int = 5
+    # Two, not five: five interviews is roughly 115 provider calls against a
+    # ceiling of twenty a day.
+    RATE_LIMIT_INTERVIEW_CREATES: int = 2
     RATE_LIMIT_INTERVIEW_WINDOW_SECONDS: int = 60 * 60 * 24
 
     # -- Per-user quotas -------------------------------------------------------

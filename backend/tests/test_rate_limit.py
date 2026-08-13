@@ -317,3 +317,50 @@ async def test_no_redis_is_not_a_degradation(monkeypatch):
     await rate_limit.enforce("1.2.3.4", scope="auth", redis=None)
 
     assert rate_limit.snapshot()["fallbacks"] == 0
+
+
+# -- The defaults against the provider budget -------------------------------------
+
+
+def test_the_ai_and_upload_windows_are_at_least_a_day():
+    """The structural half of bounding a daily budget.
+
+    These were 20/hour and 10/hour, which cannot constrain a *daily* ceiling at
+    any count -- 20/hour is 480/day. A limit whose window is shorter than the
+    budget's period does not bound the budget, it only smooths the rate. The
+    count is a judgement call; the window is not.
+    """
+    from app.core.config import Settings
+
+    settings = Settings(_env_file=None)
+
+    day = 60 * 60 * 24
+    assert settings.RATE_LIMIT_AI_WINDOW_SECONDS >= day
+    assert settings.RATE_LIMIT_UPLOAD_WINDOW_SECONDS >= day
+    assert settings.RATE_LIMIT_INTERVIEW_WINDOW_SECONDS >= day
+
+
+def test_no_single_user_can_spend_the_whole_provider_budget_on_uploads():
+    """Indexing is the largest consumer -- one embedding call per chunk, about
+    nine for a normal resume -- and it sits on the `upload` scope, not `ai`.
+    Lowering the AI limit alone would have left it untouched."""
+    from app.core.config import Settings
+
+    settings = Settings(_env_file=None)
+
+    embedding_calls_per_resume = 9
+    account_budget_per_day = 20
+    assert (
+        settings.RATE_LIMIT_UPLOAD_REQUESTS * embedding_calls_per_resume
+        <= account_budget_per_day
+    )
+
+
+def test_the_auth_limit_is_left_alone():
+    """It guards credential stuffing, not the provider budget. A daily window
+    there would lock a legitimate user out for a day over a few typos."""
+    from app.core.config import Settings
+
+    settings = Settings(_env_file=None)
+
+    assert settings.RATE_LIMIT_AUTH_WINDOW_SECONDS <= 60 * 15

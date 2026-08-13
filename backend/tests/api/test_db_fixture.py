@@ -78,3 +78,28 @@ async def test_registered_user_fixture_provides_working_credentials(api, registe
     response = await api.get("/api/v1/users/me", headers=registered_user["headers"])
     assert response.status_code == 200
     assert response.json()["email"] == registered_user["email"]
+
+
+async def test_the_suite_cannot_send_real_email(api, registered_user):
+    """No mail leaves this process, whatever `.env` says.
+
+    The `mailbox` fixture swaps in a recording sender, but it is opt-in -- so
+    every test that did not ask for it used whatever EMAIL_BACKEND was
+    configured. Once real SMTP credentials existed in the repository-root
+    `.env`, and once Settings started reading that file from any working
+    directory, that meant a live Gmail account: a suite run registers dozens of
+    users and fires a verification email at each `@example.com` address, none
+    of which exist.
+
+    Guarded the same way GEMINI_API_KEY is, and asserted here rather than
+    trusted, because the failure is invisible from inside the suite -- every
+    test still passes while the mail goes out.
+    """
+    from app.core.config import get_settings
+    from app.services.email import LoggingEmailSender, get_email_sender
+
+    settings = get_settings()
+    assert settings.EMAIL_BACKEND == "log"
+    assert isinstance(get_email_sender(), LoggingEmailSender)
+    # And registration -- which sends a verification email -- really happened.
+    assert registered_user["user"]["email"].endswith("@example.com")

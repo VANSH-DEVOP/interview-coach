@@ -18,9 +18,12 @@ from sqlalchemy.pool import NullPool
 
 from app.core import rate_limit
 from app.core.config import get_settings
+from app.core.error_reporting import configure_error_reporting
 from app.db.session import engine, get_session
 from app.main import app
 from app.services import evaluation_worker, job_queue, token_pruning
+from app.services.ai.tracing import configure_tracing
+from app.services.email import get_email_sender
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
@@ -236,6 +239,7 @@ async def api(db_session, db_connection, monkeypatch):
             yield ac
     finally:
         app.dependency_overrides.pop(get_session, None)
+        get_email_sender.cache_clear()
 
 
 # -- Redis-backed fixtures -----------------------------------------------------
@@ -282,6 +286,60 @@ async def redis_pool():
         await pool.flushdb()
         await pool.aclose()
 
+
+
+@pytest.fixture(autouse=True)
+def _no_outbound_integrations(monkeypatch):
+    """Nothing in this suite may reach a third party, whatever `.env` says.
+
+    `Settings` reads the repository-root `.env` from any working directory --
+    deliberately, so every entry point sees one configuration -- which means the
+    suite inherits whatever the developer has switched on. That is fine for
+    POSTGRES_PORT and actively wrong for everything here.
+
+    It has already gone wrong twice, in both directions:
+
+    * **Mail was really sent.** The `mailbox` fixture is opt-in, so tests that
+      did not request it used the configured backend. Once real SMTP
+      credentials were in `.env`, a suite run fired dozens of verification
+      emails at `@example.com` addresses through a live Gmail account -- which
+      is how a sending account gets throttled. Every test passed while it
+      happened.
+    * **Four tests failed** asserting that metrics, Sentry and LangSmith are off
+      by default, because on this machine they are now on. Those tests were
+      right and the suite was reading someone's laptop.
+
+    Autouse and function-scoped, so it runs before any fixture a test requests
+    and a test that deliberately enables one of these still wins -- its own
+    monkeypatch is applied after this.
+    """
+    settings = get_settings()
+    # Providers and transports: never reachable from a test.
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", None, raising=False)
+    monkeypatch.setattr(settings, "AI_API_KEY", None, raising=False)
+    monkeypatch.setattr(settings, "EMAIL_BACKEND", "log", raising=False)
+    monkeypatch.setattr(settings, "SMTP_HOST", "unreachable.invalid", raising=False)
+    # Observability: off, so the tests that assert "off by default" are testing
+    # the default rather than the machine.
+    monkeypatch.setattr(settings, "METRICS_ENABLED", False, raising=False)
+    monkeypatch.setattr(settings, "METRICS_TOKEN", None, raising=False)
+    monkeypatch.setattr(settings, "SENTRY_DSN", None, raising=False)
+    monkeypatch.setattr(settings, "LANGSMITH_TRACING", False, raising=False)
+    monkeypatch.setattr(settings, "LANGSMITH_API_KEY", None, raising=False)
+
+    for clear in (
+        get_email_sender.cache_clear,
+        configure_tracing.cache_clear,
+        configure_error_reporting.cache_clear,
+    ):
+        clear()
+    yield
+    for clear in (
+        get_email_sender.cache_clear,
+        configure_tracing.cache_clear,
+        configure_error_reporting.cache_clear,
+    ):
+        clear()
 
 @pytest.fixture
 def storage_root(tmp_path, monkeypatch):
