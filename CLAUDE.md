@@ -86,6 +86,14 @@ Two nulls that are not zeros, for the same reason as `cache_errors` vs `cache_mi
 
 An operation is not a call: one `initial_questions` may spend two provider calls (generate, then a corrective refine) and is still one thing that either worked or came back generic. That is why `attempts` is counted at the wrappers and `calls` at the transport, and why the two rates differ.
 
+### Running the stack
+
+`make up` is `docker compose up -d --build` plus one thing: it exports `GIT_SHA`, which compose stamps into `SENTRY_RELEASE`. "Since when did this start?" is the first question about any new error and is unanswerable without it.
+
+`docker compose up` on its own still works — the release is simply empty, which `env_ignore_empty` turns back into `None`. That was the state before this existed; nothing breaks, you just cannot tell which build an error came from.
+
+`SENTRY_RELEASE` is set in compose's `environment:` block rather than in `.env` on purpose: `environment:` outranks `env_file:`, so a stale value pasted into the file cannot win. It describes the working tree at start-up rather than what is baked into the image — the two differ only if you `up` without `--build` after moving HEAD, which is what `make restart` is named for.
+
 ### Metrics (Prometheus)
 
 `GET /metrics`, off until `METRICS_ENABLED`, token-guarded via `METRICS_TOKEN`. Outside `/api/v1` because it is not part of the product API and Prometheus looks for `/metrics` by convention. When disabled it answers **404, not 403** — a switched-off endpoint should be indistinguishable from one that never existed.

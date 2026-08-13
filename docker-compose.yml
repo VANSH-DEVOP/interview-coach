@@ -33,6 +33,17 @@ x-backend-env: &backend-env
   JWT_SECRET_KEY: ${JWT_SECRET_KEY:-insecure-local-dev-key-override-me}
   CORS_ORIGINS: '["http://localhost:3000"]'
   REDIS_URL: redis://redis:6379
+  # Which build this is, for Sentry. Taken from GIT_SHA in the environment, so
+  # `make up` stamps it and a bare `docker compose up` leaves it empty -- an
+  # empty value is ignored by Settings (env_ignore_empty) and falls back to
+  # None, which is the same as not setting it.
+  #
+  # Listed here rather than in `.env` deliberately: `environment:` outranks
+  # `env_file:`, so this wins over a stale value someone pasted into the file
+  # and forgot to update. It describes the working tree at start-up rather than
+  # what is baked into the image, which only differ if you `up` without
+  # `--build` after moving HEAD.
+  SENTRY_RELEASE: ${GIT_SHA:-}
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
   GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
   GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-models/gemini-embedding-001}
