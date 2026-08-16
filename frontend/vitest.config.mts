@@ -29,7 +29,13 @@ export default defineConfig({
        * project scored **86%** -- because that was 86% of `api-client.ts`,
        * `use-auth.ts` and `middleware.ts`, the three files with tests, and every
        * page and component was simply absent from the denominator. Counting them
-       * gives **19%**, which is the true figure.
+       * gave **19%**, which was the true figure at the time.
+       *
+       * It is **32.8%** now, and the way it rose is the point: `bff.ts`,
+       * `question-clock.ts`, `use-dictation.ts` and `use-speech.ts` gained real
+       * tests. Under the default setting that work would have *lowered* the
+       * reported number, because each newly-imported file drags its untested
+       * siblings into the denominator with it.
        *
        * The flattering number is worse than none: it would also *fall* whenever
        * someone added the first test for a page, because that page would join
@@ -47,20 +53,22 @@ export default defineConfig({
       /**
        * A floor, not a target, and deliberately far below the backend's 90.
        *
-       * At 19% this catches one thing: tests being deleted or silently stopping
-       * running. It does not mean the frontend is tested -- the pages and the UI
-       * components have no tests at all, and the honest fix for that is tests,
-       * not a number in a config file. Raise this as they arrive.
+       * This catches one thing: tests being deleted or silently stopping
+       * running. It does not mean the frontend is tested -- the pages and the
+       * UI components still have no tests at all, and the honest fix for that
+       * is tests, not a number in a config file. Raise these as they arrive,
+       * which is what happened here: they were 15/12/15/15 against a measured
+       * 19%, and the hooks and lib tests that landed since moved it to 32.8%.
        */
       thresholds: {
-        // Each set just below its measured value (19.4 / 14.5 / 19.3 / 18.5).
+        // Each set just below its measured value (32.8 / 23.1 / 28.2 / 32.6).
         // Branches is the lowest because the untested UI components are almost
         // all branch-free, so they add to the denominator without adding
         // branches anyone could cover.
-        statements: 15,
-        branches: 12,
-        functions: 15,
-        lines: 15,
+        statements: 30,
+        branches: 21,
+        functions: 26,
+        lines: 30,
       },
     },
   },

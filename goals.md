@@ -270,7 +270,20 @@ it at any point. Rank on what an attacker actually gains.
 - [x] ~~**`README.md` is stale** — it still describes question generation, evaluation, and RAG as unfilled "seams". They ship.~~ ✅ 2026-08-11 — rewritten against the tree rather than from memory: counts (9 models, 17 AI modules, 7 migrations, 54 test files) were taken from the repository and re-checked by a script, not guessed.
   Beyond the "seams" claim, the stale parts were: a capability table saying interviews used static questions and reports were stubs, "CI (to be added)", a hardening backlog listing CSP and token pruning that both shipped, a folder tree naming one migration and two test files, and `middleware.ts` at the root — where it was, and where Next never loaded it from.
   §6 now says what the AI pipeline *is*, records that LangChain is used for the provider transport and vector store only, and keeps a "still open" table for object storage, streaming and multi-provider.
-- [ ] Keep `CLAUDE.md`, `backend/AI_INTEGRATION.md`, and `backend/RAG_IMPLEMENTATION.md` in sync as these land.
+- [x] ~~Keep `CLAUDE.md`, `backend/AI_INTEGRATION.md`, and `backend/RAG_IMPLEMENTATION.md` in sync as these land.~~ ✅ 2026-08-16 — they were not kept in sync, and this is what that cost.
+
+  **`AI_INTEGRATION.md` was two months behind** — last touched at the first AI commit — and had drifted past wrong into harmful. It instructed the reader to set `GEMINI_MODEL=gemini-1.5-flash`, the retired id whose silent 404 is recorded twice in this very file, and stated the free tier as "60 requests/minute, 1,500 requests/day" against the real 20/day account-wide ceiling that most of this project's design decisions answer to. Its entire "Future Enhancements" list had shipped. It named `GeminiError`, which no longer exists, and `complete_session()`, which is `complete()`. Rewritten around what it is actually for: configuring, operating and diagnosing the provider.
+
+  **`RAG_IMPLEMENTATION.md` had grown a split personality.** The Aug 11 rewrite added hybrid retrieval, the embedding cache, query rewriting and the generation chain on top of the old body without reconciling it, so the document's own architecture diagram showed dense-only retrieval and issued the exact filler query — `"skills for X"` — that `query.py` exists to remove. It also still pointed at `/tmp/interviewpilot/chroma`. Everything below line 190 was rewritten against the tree.
+
+  **`README.md`** had four stale counts (17→18 AI modules, 7→8 migrations, 54→58 test files) and listed streaming as unshipped. Its "still open" table now names the three gaps that are actually open, each with what blocks it.
+
+  **`CLAUDE.md`** was accurate on mechanism — ~25 specific claims spot-checked, all the config defaults and invariants held — and wrong on four numbers: 42→50 `except Exception` blocks, 67→80 `Gemini*` references, and both coverage figures. Its closing "Note on the README" had inverted: it still said the README was stale about AI, which the item above fixed five days earlier. It now carries a table of which doc is authoritative for what.
+
+  **Measured rather than assumed, since the point of the exercise was that numbers rot:** backend 90.36% (768 passed, 9 skipped), not the 91% claimed; frontend **32.8%**, not 19%, because `bff.ts`, `question-clock.ts`, `use-dictation.ts` and `use-speech.ts` gained tests. Frontend thresholds raised 15/12/15/15 → 30/21/26/30 to match. The backend's slack above `fail_under` is now about a third of a point rather than the full point its comment claimed.
+
+  **The lesson, since a checkbox does not carry one:** every one of these errors was invisible to CI. A doc cannot fail a test, so nothing here rots louder than prose containing a number or a model id. The standing rule now lives at the bottom of `CLAUDE.md` — when you change a model id, a default, a quota or a count, grep the four docs before committing.
+- [x] ~~`learning-plan.md` is the fifth doc and was the worst of them.~~ ✅ 2026-08-16 — **deleted** (`2bf32e6`), which was the right call. It cited `app/services/ai/gemini_client.py`, a file that no longer exists; described the transport as "a hand-rolled httpx call, no SDK" when it goes through LangChain; named `TextChunker` for `ResumeChunker`; pointed at `frontend/middleware.ts`, the path where Next never loaded it; described `api-client.ts` as doing "token storage" after the BFF removed all of it; and had every cited line count and LOC total off by up to 3×. A wrong onboarding doc costs more than no onboarding doc, and it duplicated ground `README.md` and `CLAUDE.md` already cover. **The four docs above are the set to keep in sync — there is no fifth.**
 ___
 ## Discovery 
 - [x] **User-Data (PII) Masking** the pipeline doesn't handle the user data masking before sending it to the LLM it's a security issue.
@@ -582,7 +595,7 @@ means it is reached and returning junk, which counts as a hit and is not one.
 the rest, so structured fields had to be added to a list in another module to
 survive. It now emits every non-standard record attribute.
 
-**The benchmark** (`tests/test_retrieval_eval.py`) is the durable asset: one
+**The benchmark** (`tests/api/test_retrieval_eval.py`) is the durable asset: one
 fixture resume, twelve queries, real Chroma, and deterministic lexical
 embeddings (blake2b-hashed bag of words — the builtin `hash()` is seed-randomised
 per process and would have made the scores drift between runs). Measured today:

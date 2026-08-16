@@ -115,7 +115,7 @@ Latency buckets go to 30s rather than the client's default 10, because the inter
 
 `app/core/error_reporting.py`. Off until `SENTRY_DSN` is set. Configured in both processes — `app/main.py`'s lifespan and `app/worker.py`'s `startup` — because they are separate processes and the worker is where an unreported failure costs most: nobody is watching a response when a cron job dies.
 
-**Where it is wired in is the decision, not that it exists.** This application has **42 `except Exception` blocks**, by design — an interview must always be completable, so every AI path, the queue, the cache and the rate limiter catch everything and carry on. A reporter attached only to the ASGI middleware would therefore be nearly silent: it would see the few faults that escape a system built so faults do not escape, and miss every one the fallbacks absorb. It would be quietest exactly when things are worst. So there are two routes in:
+**Where it is wired in is the decision, not that it exists.** This application has **50 `except Exception` blocks**, by design — an interview must always be completable, so every AI path, the queue, the cache and the rate limiter catch everything and carry on. A reporter attached only to the ASGI middleware would therefore be nearly silent: it would see the few faults that escape a system built so faults do not escape, and miss every one the fallbacks absorb. It would be quietest exactly when things are worst. So there are two routes in:
 
 - **Log records at ERROR and above become events** (`LoggingIntegration(event_level=ERROR)`), because most of those 42 blocks already log at that level before swallowing. Coverage comes free and stays correct when someone adds the forty-third. INFO stays breadcrumbs — otherwise every `rag.retrieval` trace becomes an issue.
 - **`report()` from `record_fallback()`**, the choke point every AI degradation passes through. At **warning**, not error: one fallback is the system working. Fingerprinted by `(operation, exception type)`, so a quota-exhausted afternoon is one issue saying "429, three hundred times" rather than three hundred pages.
@@ -161,7 +161,7 @@ Without that extraction, pointing `AI_PROVIDER` at Anthropic breaks generation o
 
 **Embeddings do not follow `AI_PROVIDER`.** A Chroma collection has fixed dimensionality and embedding models disagree about it (3072 vs 1536 vs 768), so switching does not degrade — it raises on the first query against an existing index. Making embeddings swappable means keying the collection name on the model so a switch starts a fresh index, plus re-embedding every resume against 20 requests/day. Worth doing; deliberately not bundled in.
 
-`GeminiQuestionGenerator` and `GeminiEvaluator` keep their names — 67 references, nearly all test churn, and unlike the transport they build prompts and parse JSON rather than owning the connection. A known naming wart, not a claim.
+`GeminiQuestionGenerator` and `GeminiEvaluator` keep their names — 80 references, nearly all test churn, and unlike the transport they build prompts and parse JSON rather than owning the connection. A known naming wart, not a claim.
 
 **The seam is deliberately unchanged by that.** `generate_json(system_instruction=..., prompt=...) -> parsed JSON`, and the exception types, are what every caller and test above the client is written against — only the transport moved. Keep it that way: dissolving these wrappers into direct LangChain calls at each site would move the redaction guarantee to every one of them, and `masking.py` exists so a call site *cannot* forget.
 
@@ -379,7 +379,7 @@ Two things the guard cannot fix, both stated at the top of the template:
 
 Two different limits, deliberately two mechanisms. Collapsing them into one is the mistake to avoid, and each half is wrong for the other's job:
 
-- **Occupancy — what an account *holds*.** `MAX_RESUMES_PER_USER`, enforced in `ResumeService.upload` by **counting rows** (`ResumeRepository.count_for_user`). The number already exists in Postgres, so a counter would be a second copy that drifts; it is durable, so a Redis restart cannot hand out unlimited uploads; and deleting a resume frees the quota immediately, which is *correct* — the bounded resource is storage, and deleting returns it. The hourly upload rate limit bounded bursts and nothing bounded the total: 10/hour is ~7,300 files a month.
+- **Occupancy — what an account *holds*.** `MAX_RESUMES_PER_USER`, enforced in `ResumeService.upload` by **counting rows** (`ResumeRepository.count_for_user`). The number already exists in Postgres, so a counter would be a second copy that drifts; it is durable, so a Redis restart cannot hand out unlimited uploads; and deleting a resume frees the quota immediately, which is *correct* — the bounded resource is storage, and deleting returns it. The upload rate limit bounded bursts and nothing bounded the total — when this was introduced the limit was 10/hour, which is ~7,300 files a month. (It is now `RATE_LIMIT_UPLOAD_REQUESTS=2` per day, cut to fit the provider budget; the quota is what makes that a ceiling rather than a slower fill.)
 - **Consumption — what an account *spends*.** `RATE_LIMIT_INTERVIEW_CREATES`, a **window counter** on the `interview_create` scope. A provider call cannot be un-spent, so counting `interview_sessions` rows would make delete-and-retry a way round the cap. `tests/api/test_quotas.py` asserts both directions: deleting a resume frees quota, deleting an interview does not.
 
 The quota check runs **before** `storage.save`, not after the row is built — a storage write is the side effect that outlives a failed request.
@@ -418,8 +418,8 @@ Prefer an API test for anything touching ownership: the service fakes implement 
 
 Measured, thresholded, and **opt-in**: `--cov` is deliberately not in `addopts`, because running one test file is the commonest local action and measuring the whole application from it reports ~41% and would fail every time. CI passes the flag; `pytest --cov=app` locally is the identical check, threshold and all (`[tool.coverage.report]` in `pyproject.toml`).
 
-- **Backend: 91%, threshold 90.** Branch coverage is on — measured at 92% line / 91% branch, so it costs one point and is the more meaningful number in a codebase whose defining feature is an `except` on every AI path that silently swaps in a fallback. A fallback branch nothing ever takes is something this project has shipped before.
-- **Frontend: 19%, thresholds 15/12/15/15** (`vitest.config.mts`).
+- **Backend: 90.36%, threshold 90** (768 passed, 9 skipped; measured on Python 3.13 — CI runs 3.12 and drifts slightly). Branch coverage is on — 92% line against 90.4% with branches, so it costs about two points and is the more meaningful number in a codebase whose defining feature is an `except` on every AI path that silently swaps in a fallback. A fallback branch nothing ever takes is something this project has shipped before. **The slack is now about a third of a point, not the point it was**: the next untested branch fails the build, which is the ratchet working, not a reason to lower it.
+- **Frontend: 32.8%, thresholds 30/21/26/30** (`vitest.config.mts`). It was 19% at 15/12/15/15; `bff.ts`, `question-clock.ts`, `use-dictation.ts` and `use-speech.ts` gaining tests is what moved it, and the thresholds were raised to match. That direction is the rule — raise on a real rise, never lower to pass.
 
 **`coverage.all: true` on the frontend is load-bearing.** v8 reports only the files a test imported, and left at its default this project scored **86%** — that being 86% of the three files that have tests, with every page and component absent from the denominator. The honest figure is 19%. The flattering one is worse than nothing, because it would also *fall* the moment someone wrote the first test for a page, since that page would join the denominator mostly uncovered — a metric that punishes writing a test.
 
@@ -491,6 +491,17 @@ Consequences to preserve when touching `api-client.ts`:
 - A 401 that could not be renewed surfaces as the transient error, not as `unauthorized`.
 - `useAuth().connectionError` carries the transient case; `(app)/layout.tsx` renders `ConnectionBanner` from it and passes its own `reload` as the retry.
 
-## Note on the README
+## The other docs, and which one is authoritative
 
-`README.md` predates the AI work and still describes question generation/evaluation as unimplemented "seams". The seams are filled: Gemini generation, evaluation, and RAG all ship. The layering rules and setup instructions in it are still accurate.
+Four documents describe this repository and they do not overlap. Knowing which answers a question saves reading the wrong one:
+
+| Doc | Answers | Not for |
+|---|---|---|
+| `README.md` | What the project is, how to run it, what ships and what does not. The layering rules and setup instructions are accurate. | Why anything was decided. |
+| **`CLAUDE.md`** (this file) | **Why.** Every non-obvious decision, and the failure that motivated it. Authoritative when it disagrees with the others. | Step-by-step setup. |
+| `backend/AI_INTEGRATION.md` | Configuring and operating the provider: keys, models, quota, what degradation looks like from the outside, how to diagnose it. | Retrieval internals. |
+| `backend/RAG_IMPLEMENTATION.md` | Retrieval in depth: chunking, embedding, the vector store, hybrid search, the benchmark. | Anything about the chat provider. |
+
+`goals.md` is the backlog and the bug log, and is where a decision's history lives once it is closed.
+
+**Numbers in prose go stale silently, and this has already happened.** `AI_INTEGRATION.md` sat two months behind the code, telling readers to configure `gemini-1.5-flash` — a retired ID whose 404 the fallback layer hides, which is the exact failure `goals.md` records twice — and stating the free tier as 1,500 requests/day when the binding limit is 20. Neither error could produce a test failure. When you change a model ID, a default, a quota, or a count, grep the four docs for it before you commit; `goals.md` carries a standing item for exactly this.

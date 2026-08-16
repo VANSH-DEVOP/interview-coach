@@ -49,7 +49,7 @@ than an afternoon of grepping.
 
 ## Benchmark
 
-`tests/test_retrieval_eval.py` scores a fixed resume against twelve queries
+`tests/api/test_retrieval_eval.py` scores a fixed resume against twelve queries
 using real (in-memory) Chroma and deterministic lexical embeddings, so it runs
 in CI with no API key and no quota. Two tiers:
 
@@ -189,82 +189,47 @@ silently. Extras are trimmed for free; a short set triggers the refinement.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ Resume Upload Flow                                              │
-└─────────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-                ┌───────────────────────┐
-                │ ResumeService.upload()│
-                │  - Store file         │
-                │  - Parse PDF/DOCX     │
-                └───────────┬───────────┘
-                            │
-                            ▼
-                ┌───────────────────────────────────┐
-                │ ResumeChunker.chunk()             │
-                │  - Split on section headings      │
-                │  - Pack paragraphs to ~800 chars  │
-                └───────────┬───────────────────────┘
-                            │
-                            ▼
-                ┌───────────────────────────────────┐
-                │ resume_chunks (PostgreSQL)        │
-                │  - text, section, ordinal         │
-                │  - embedded_at NULL until indexed │
-                └───────────┬───────────────────────┘
-                            │
-                            ▼
-                ┌───────────────────────────────────┐
-                │ RAGService.index_chunks()         │
-                │  - Generate embeddings            │
-                │  - Store in ChromaDB              │
-                │  - Return embedded ordinals       │
-                └───────────┬───────────────────────┘
-                            │
-                            ▼
-                ┌──────────────────────┐
-                │  ChromaDB Vector DB  │
-                │ [Resume Embeddings]  │
-                └──────────────────────┘
+Two flows. Indexing happens once per upload; retrieval happens on every
+generation.
 
-┌─────────────────────────────────────────────────────────────────┐
-│ Question Generation Flow (with RAG)                             │
-└─────────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-        ┌───────────────────────────────────────┐
-        │ InterviewService.create()             │
-        │ - Start interview session             │
-        └───────────────┬───────────────────────┘
-                        │
-                        ▼
-    ┌──────────────────────────────────────────────┐
-    │ QuestionGenerator.initial_questions()       │
-    │ - Receives: target_role, resume_id          │
-    └──────────────────┬───────────────────────────┘
-                       │
-              ┌────────┴────────┐
-              │                 │
-              ▼                 ▼
-         ┌─────────┐     ┌────────────────────┐
-         │ No RAG  │     │ With RAG Enabled   │
-         │         │     │                    │
-         │ Static  │     │ 1. Create query:   │
-         │ 3 Qs   │     │    "skills for X"  │
-         └─────────┘     │                    │
-                         │ 2. Embed query     │
-                         │                    │
-                         │ 3. Retrieve from   │
-                         │    ChromaDB        │
-                         │                    │
-                         │ 4. Gemini uses     │
-                         │    top-k chunks   │
-                         │    to generate 5  │
-                         │    tailored Qs    │
-                         └────────────────────┘
 ```
+INDEXING                                RETRIEVAL (per request)
+─────────────────────────────────       ───────────────────────────────────────
+ResumeService.upload()                  free text: role, or question + answer
+  store blob, parse PDF/DOCX                        │
+        │                                           ▼
+        ▼                               query.rewrite()   ← deterministic,
+ResumeChunker.chunk()                     drops filler       no provider call
+  split on the resume's own                       │
+  section headings, pack to ~800                  │
+        │                              ┌──────────┴──────────┐
+        ▼                              ▼                     ▼
+resume_chunks  (PostgreSQL)      DENSE                  SPARSE
+  content, section, ordinal      embed query,           Postgres FTS over
+  search_vector  (generated)     Chroma kNN,            search_vector,
+  embedded_at NULL until done    RAG_MAX_DISTANCE       terms ORed
+        │                              │                     │
+        ▼                              └──────────┬──────────┘
+RAGService.index_chunks()                         ▼
+  redact → embed → upsert                fuse()  — Reciprocal Rank Fusion
+        │                                  keeps orderings, not scores
+        ▼                                         │
+   ChromaDB                                       ▼
+  (CHROMA_PATH volume)                   top-k chunks → prompt
+                                                  │
+                                    empty? ───────┴──→ resume_text[:4000]
+                                                       counted as a
+                                                       full_text_fallback
+```
+
+**Save chunks, then embed, then mark embedded.** The ordering in
+`ResumeService._index` is deliberate: a provider failure leaves rows with
+`embedded_at` NULL rather than leaving nothing, so *which* parts of the resume
+are missing from the index survives the failure.
+
+**Either half of retrieval failing degrades to the other.** Both empty returns
+`""`, and the generator falls back to raw resume text — which is counted, not
+silent.
 
 ## Components
 
@@ -274,10 +239,10 @@ Splits resume text along the resume's own structure.
 
 ```python
 chunks = ResumeChunker().chunk(resume_text)
-# Returns: [Chunk(ordinal=0, section=None, content="Priya Raman\n..."),
-#           Chunk(ordinal=1, section="SUMMARY", content="Backend engineer..."), ...]
+# [Chunk(ordinal=0, section=None, content="Priya Raman\n..."),
+#  Chunk(ordinal=1, section="SUMMARY", content="Backend engineer..."), ...]
 
-chunks[1].retrieval_text   # "SUMMARY\nBackend engineer..." -- what gets embedded
+chunks[1].retrieval_text     # "SUMMARY\nBackend engineer..." -- a property, not a call
 ```
 
 **How it splits:**
@@ -296,303 +261,305 @@ chunks[1].retrieval_text   # "SUMMARY\nBackend engineer..." -- what gets embedde
   sentences were embedded twice, could be retrieved twice, and cost prompt
   budget as a copy of themselves.
 
+**`retrieval_text` prepends the section heading**, so the third chunk of a long
+EXPERIENCE section still says what it is; `content` stays clean in the database
+for reading and for the keyword index. The implementation is a free function in
+`app/models/resume_chunk.py`, exposed as a property on both `Chunk` and
+`ResumeChunk` rather than written twice,
+**because rank fusion matches candidates by chunk text** — if the two
+formattings differed by a newline, no chunk would ever be recognised as found by
+both halves and `agreed` would sit at zero for ever.
+
 **Where chunks live:** rows in `resume_chunks`, written before the embedding
 call. That makes re-indexing possible without re-embedding — at 20 provider
 requests per day, re-embedding a resume to rebuild an index is not a casual
 operation — and `embedded_at IS NULL` marks text the retriever cannot see.
 
+`replace_for_resume` deletes then inserts rather than upserting by ordinal:
+re-chunking can produce *fewer* pieces, and updating in place would leave the
+previous run's tail behind as rows matching no part of the document.
+
 ### 2. EmbeddingService (`app/services/ai/embedding.py`)
 
-Generates vector embeddings using Google's Gemini embedding API.
-
 ```python
-embedding_service = EmbeddingService(api_key="AIzaSyD...")
+service = EmbeddingService(api_key=..., model="models/gemini-embedding-001")
 
-# Single embedding
-embedding = await embedding_service.embed_text("Python expert")
-# Returns: list[float] (3072-dimensional vector)
-
-# Batch embeddings
-embeddings = await embedding_service.embed_batch([
-    "Python expert",
-    "Backend engineer",
-    "System design",
-])
-# Returns: list[list[float]]
+vector  = await service.embed_text("Python expert")          # list[float], 3072-dim
+vectors = await service.embed_batch(["...", "...", "..."])   # list[list[float]]
 ```
 
-**Features:**
-- Uses `models/gemini-embedding-001`, overridable via `GEMINI_EMBEDDING_MODEL`
-- 3072-dimensional vectors
-- Note: the previous default, `models/embedding-001`, was retired by Google and
-  returns HTTP 404. Verify any replacement against `GET /v1beta/models` for the
-  key in use — a retired ID fails silently behind the fallback layer.
-- Async/await support
-- Batch processing with error tolerance
-- Graceful error handling
+- **Redaction happens here**, not at the call sites, so a new caller cannot
+  forget it. Same reasoning as `ModelClient`; see `AI_INTEGRATION.md` §8.
+- **The cache sits inside this class**, keyed on the `sha256` of the **redacted**
+  text plus the model. Hashing before redaction would put a fingerprint of the
+  candidate's name and email in Redis, and would miss for two resumes differing
+  only in redacted identifiers. The model is in the key, so changing
+  `GEMINI_EMBEDDING_MODEL` is safe — old entries are never read again rather
+  than silently mixed into an index where distances would mean nothing.
+- **Token counts are absent, not zero.** Google returns no usage for embeddings,
+  so `/health` reports `input_tokens: null` for the `embed` operation.
+- **`models/embedding-001`, the previous default, was retired by Google** and
+  returns 404 — behind the fallback layer, silently, which is how RAG here went
+  weeks without producing a single embedding. Verify any replacement against
+  `GET /v1beta/models` for the key in use.
 
-### 3. VectorStore (`app/services/ai/vector_store.py`)
+### 3. ChromaVectorStore (`app/services/ai/vector_store.py`)
 
-Persistent vector database using ChromaDB for semantic search.
+Drives **`langchain_chroma.Chroma`** over a shared `chromadb` client. Only the
+transport lives here; `RAGService`, `HybridRetriever` and the benchmark are
+written against this interface.
 
 ```python
-vector_store = ChromaVectorStore(persist_directory="/path/to/chroma")
+store = get_vector_store()          # process-wide, CHROMA_PATH
 
-# Add resume chunks
-await vector_store.add_resume(
-    resume_id=uuid.UUID("..."),
-    user_id=uuid.UUID("..."),
-    chunks=["chunk1", "chunk2", ...],
-    embeddings=[[0.1, 0.2, ...], ...],
-)
-
-# Retrieve similar chunks
-results = await vector_store.retrieve_relevant(
-    query_embedding=[0.1, 0.2, ...],
-    resume_id=uuid.UUID("..."),
-    top_k=5,
-)
-# Returns: RetrievalResult with documents and distances
+await store.add_resume(resume_id=..., user_id=..., chunks=[...], embeddings=[...])
+result = await store.retrieve_relevant(query_embedding=[...], resume_id=..., top_k=5)
+await store.delete_resume(resume_id)
 ```
 
-**Features:**
-- Persistent storage (DuckDB backend)
-- Cosine similarity for semantic search
-- Per-resume indexing with metadata
-- Automatic collection management
+Three things that look like details and are not:
+
+- **`retrieve_relevant` returns cosine *distances*, ascending — lower is
+  better.** They come from `similarity_search_by_vector_with_relevance_scores`,
+  whose name is a misnomer: it hands back Chroma's `distances` untouched. This
+  matters because `RAG_MAX_DISTANCE` is a strict `<` in distance space, so a
+  value flipped to a similarity keeps precisely the chunks the cutoff exists to
+  drop, with no error anywhere.
+- **Embeddings are computed upstream and carried in by
+  `_PrecomputedEmbeddings`.** `Chroma.add_texts` has no parameter for
+  precomputed vectors, but binding an embedding function to a process-wide store
+  would freeze one user's redactor into everybody's indexing. The courier is
+  constructed per call and computes nothing; its `embed_query` **raises**, since
+  embedding there would be a provider call outside redaction, outside the cache,
+  against 20 requests a day.
+- **`delete_resume` filters on metadata, not an id range**, because a re-chunk
+  can produce fewer pieces. It swallows its exceptions by design, so only a
+  read-back proves the filter matched anything — which is what
+  `tests/test_vector_store.py` is for.
+
+`add_texts` upserts, where the raw `collection.add` it replaced errored on a
+duplicate id, so re-indexing a resume now overwrites in place.
+
+**`get_vector_store()` holds a lock, and it is not decoration.**
+`chromadb.PersistentClient` is unsafe to build concurrently: two cold calls for
+the same path race on chromadb's own registry and the losers see a half-started
+system. Worse, the failing attempt stops the system the *winner* is using, so
+RAG stays off for the rest of the process rather than recovering. `lru_cache`
+does not help — it prevents repeat work after a call returns, not two threads
+entering the body at once, and `get_rag_service` is a sync dependency that
+FastAPI runs in the threadpool.
 
 ### 4. RAGService (`app/services/ai/rag.py`)
 
-High-level orchestration of chunking, embedding, and retrieval.
+Dense-only orchestration: embedding plus the vector store.
 
 ```python
-rag_service = RAGService(embedding_service, vector_store)
+rag = get_rag_service()          # None when unavailable
 
-# Index a resume
-chunk_count = await rag_service.index_resume(
-    resume_id=uuid.UUID("..."),
-    user_id=uuid.UUID("..."),
-    resume_text=parsed_text,
-)
-
-# Retrieve context for a query
-context = await rag_service.retrieve_context(
-    resume_id=uuid.UUID("..."),
-    query="experience with payment systems",
-    top_k=5,
-)
-# Returns: concatenated string of top-5 relevant chunks
+ordinals = await rag.index_chunks(resume_id, user_id, chunks, redactor=redactor)
+ranked   = await rag.retrieve_ranked(resume_id, query, top_k=5)   # list[str], best first
+context  = await rag.retrieve_context(resume_id, query, top_k=5)  # the same, joined
+await rag.delete_index(resume_id)
 ```
 
-## Integration Points
+`index_chunks` takes **chunks, not raw text**: chunking is a pure function and
+the rows belong to the caller's transaction, so `ResumeService` splits the text
+and saves it while this stays free of a database session — it is cached
+process-wide and could not hold one anyway.
 
-### ResumeService
+`get_rag_service()` returns **`None`** when there is no API key or Chroma cannot
+be opened, and records why in `retrieval_metrics` (`disabled_reason`). It is
+`@lru_cache`d, so tests that vary settings must call
+`get_rag_service.cache_clear()`.
 
-**Before (without RAG):**
+### 5. HybridRetriever (`app/services/ai/retrieval.py`)
+
+**The path a request actually takes.** Built per request in `deps.py`, because
+its two halves have different lifetimes: the keyword half is a repository on the
+request's session, the dense half is the process-wide `RAGService`.
+
 ```python
-resume = Resume(
-    parsed_text=parsed_text,
-    status=ResumeStatus.PARSED,
-)
-await resumes.add(resume)
+scored = await retriever.retrieve_scored(resume_id, query, top_k=5)
+# [Scored(text=..., score=..., dense_rank=1, sparse_rank=3), ...]
+
+context = await retriever.retrieve_context(resume_id, query, top_k=5)   # str wrapper
 ```
 
-**After (with RAG):**
+- **Dense** generalises and is bad at exact tokens (`gRPC`, a version number)
+  that get averaged away inside a chunk.
+- **Sparse** is Postgres full-text over `resume_chunks.search_vector`, a
+  generated column, so nothing in the application maintains it. Query terms are
+  ORed rather than ANDed: `plainto_tsquery` would require a chunk containing
+  *every* word of "skills and experience relevant to Senior Backend Engineer",
+  which is no chunk. Terms are tokenised in Python and bound as a parameter —
+  `to_tsquery` has a syntax, and a candidate's answer will eventually contain a
+  stray `&`.
+- **Fusion** is Reciprocal Rank Fusion, not a weighted score. Cosine distance
+  and `ts_rank` have different ranges and neither is calibrated, so any weighted
+  sum invents an exchange rate; RRF keeps only the orderings, which is what each
+  half is reliable about.
+
+Sessionless callers — the evaluation worker — use `RAGService` directly and get
+dense-only retrieval.
+
+## Where it plugs in
+
+**`ResumeService.upload()`** parses the file, saves `parsed_text`, chunks it,
+saves the chunks as rows, then embeds them. Indexing is **non-blocking**: a
+failure is logged and counted, and the upload still succeeds. `reprocess()`
+re-runs it, which is affordable only because of the embedding cache.
+
+**`GeminiQuestionGenerator._resume_context()`** is the single place that decides
+what resume text reaches a prompt, and therefore the only place that sees every
+route to a truncated-resume prompt — which is why `full_text_fallbacks` is
+counted there:
+
 ```python
-resume = Resume(
-    parsed_text=parsed_text,
-    status=ResumeStatus.PARSED,
-)
-resume = await resumes.add(resume)
-
-# NEW: Index for RAG
-if rag_service and parsed_text:
-    chunk_count = await rag_service.index_resume(
-        resume.id, user_id, parsed_text
-    )
+# A retriever, a rewritten query, a distance cutoff -- or the honest fallback.
+context = await retriever.retrieve_context(resume_id, rewrite(role_or_exchange))
+if not context:
+    # `reason` distinguishes "no retriever" from "no resume" from "found nothing",
+    # which is the difference between a misconfiguration and a bad query.
+    retrieval_metrics.record_full_text_fallback(purpose=purpose, reason=reason)
+    context = resume_text[:4000]
 ```
 
-### GeminiQuestionGenerator
+**The query is rewritten first, and that is not cosmetic.** Retrieval used to be
+issued `"skills and experience relevant to {role}"` — four filler terms against
+one real one — and, for follow-ups, the entire question plus the entire answer.
+Filler hurts both halves differently: the keyword half ORs its terms, so common
+words drag irrelevant chunks up, and the dense half averages the query into one
+vector that filler pulls toward the centre. Measured on realistic follow-up
+exchanges, rewriting moved **precision@1 from 0.75 to 1.00**.
 
-**Before (static truncation):**
-```python
-resume_block = f"\nCandidate resume excerpt:\n{resume_text[:4000]}"
-
-prompt = f"Generate 5 questions for {role}. Resume: {resume_block}"
-```
-
-**After (RAG-enhanced):**
-```python
-if rag_service and resume_id:
-    query = f"skills and experience relevant to {role}"
-    context = await rag_service.retrieve_context(
-        resume_id, query, top_k=5
-    )
-    resume_context = f"...[most relevant sections]..."
-else:
-    resume_context = f"...[first 4000 chars]..."
-
-prompt = f"Generate 5 questions for {role}. Resume: {resume_context}"
-```
-
-**Result:** Questions focus on the **most relevant** skills/experience, not just the first 4KB.
-
-## How RAG Improves Question Generation
-
-### Example: Backend Engineer Position
-
-**Resume Content:**
-- Worked at 5 different companies
-- 10+ years experience
-- Skills: Python, Java, Go, Rust, JavaScript
-- Experience with databases, caching, messaging queues
-- Recent focus on Kubernetes and microservices
-
-**Without RAG (first 4KB):**
-- Generic questions about general background
-- May miss domain expertise deeper in resume
-
-**With RAG:**
-1. **Query**: "What backend technologies and tools has this candidate used?"
-2. **Retrieved Chunks:**
-   - "Implemented message queues with Kafka"
-   - "Optimized database queries, reduced latency 60%"
-   - "Deployed microservices to Kubernetes"
-   - "Built distributed systems handling 1M req/sec"
-3. **Generated Questions:**
-   - "Tell me about your experience with message brokers like Kafka"
-   - "Describe how you've optimized database performance"
-   - "What's your experience with Kubernetes and containerization?"
-   - "Walk me through a high-scale distributed system you've built"
-   - "How do you approach system design for scalability?"
-
-**Result:** All 5 questions directly target the candidate's actual expertise!
+`rewrite()` is deterministic — the obvious implementation spends one provider
+request per retrieval against a ceiling of 20/day, undoing the embedding cache
+in order to improve retrieval. It falls back to the original string when every
+term is filler, because a bad query is bad but an empty one retrieves nothing
+and the caller cannot tell those apart from the result.
 
 ## Configuration
 
-### Enable RAG
+RAG turns itself on when there is an API key and a writable Chroma path. There
+is no separate enable flag.
 
-Set `GEMINI_API_KEY` in `.env`:
+| Variable | Default | Notes |
+|---|---|---|
+| `GEMINI_API_KEY` | *(unset)* | Unset ⇒ `get_rag_service()` returns `None`, `disabled_reason: no_api_key`. |
+| `GEMINI_EMBEDDING_MODEL` | `models/gemini-embedding-001` | 3072-dim. Verify against `GET /v1beta/models` before changing. |
+| `CHROMA_PATH` | `/var/lib/interviewpilot/chroma` | The `chroma_data` Docker volume. |
+| `RAG_MAX_DISTANCE` | `1.0` | Strict `<`. 1.0 is exactly orthogonal, so `<=` would keep precisely the chunks the cutoff exists to remove. |
+| `REDIS_URL` | *(unset)* | Enables the embedding cache. Strongly recommended. |
+| `EMBEDDING_CACHE_TTL_SECONDS` | 30 days | |
+
+**Outside Docker the default `CHROMA_PATH` is usually unwritable.** RAG then
+logs a warning and disables itself — `disabled_reason: init_failed` — which is
+the normal case when running the backend directly. Point it somewhere local:
 
 ```bash
-GEMINI_API_KEY=AIzaSyD...
+CHROMA_PATH=./.chroma
 ```
 
-RAG will **automatically enable** when:
-1. `GEMINI_API_KEY` is configured
-2. Resume is uploaded and parsed
-3. Interview is created with resume context
+## Cost
 
-### Storage Configuration
+At the free tier the meaningful unit is **requests**, not dollars: 20 per day
+for the whole account.
 
-ChromaDB persists to `/tmp/interviewpilot/chroma` by default (created automatically).
+| | Requests |
+|---|---|
+| Indexing a resume | 1 per chunk — ~9 for the benchmark fixture; **0 on a cache hit** |
+| One retrieval | 1 (embed the query). The keyword half is free. |
+| Re-indexing unchanged text | **0**, with `REDIS_URL` set |
 
-To change:
+Two uploads used to exhaust the day, and `reprocess()` — which exists to rebuild
+an index — was unaffordable. Vectors are cached as packed float32 (`array('f')`),
+12 KiB for a 3072-dim vector against ~60 KiB as JSON; the precision loss is far
+below what cosine similarity distinguishes.
 
-```python
-# In deps.py
-vector_store = get_vector_store(
-    persist_directory=Path("/custom/path/to/chroma")
-)
-```
-
-## Performance & Costs
-
-### Chunking
-- Splits resume into ~3-5 chunks (typical resume)
-- No external API calls required
-
-### Embeddings
-- ~3-5 API calls per resume upload (one per chunk)
-- ~$0.0001-0.0002 per resume
-
-### Retrieval
-- ~1 API call per question generation (embed query)
-- ~$0.00002 per question
-
-### Total Cost Per Interview
-- Indexing: $0.0001-0.0002
-- 5 questions: $0.0001
-- Evaluation: $0.0005
-- **Total: ~$0.0007** (~0.07¢ per interview)
+Every cache failure is swallowed and counted as `cache_errors`, **separately
+from `cache_misses`**: an unreachable cache behaves exactly like a cold one — the
+request succeeds at full provider price — and reading the two as one number is
+how you keep paying while believing the cache works.
 
 ## Testing
 
-### Run RAG Tests
-
 ```bash
-cd backend
+# The benchmark: one fixture resume, twelve queries, real in-memory Chroma,
+# deterministic lexical embeddings. No network, no key.
+pytest tests/api/test_retrieval_eval.py -v
+
+# Unit tests for the store, the chunker, fusion, the cache and the counters.
+pytest tests/test_vector_store.py tests/test_resume_chunker.py \
+       tests/test_hybrid_retrieval.py tests/test_embedding_cache.py \
+       tests/test_retrieval_metrics.py -v
+
+# The halves that need a real Postgres / Redis.
+pytest tests/api/test_hybrid_retrieval_api.py tests/api/test_embedding_cache_api.py -v
+
+# Script-style probes. They print rather than assert and self-skip with no key.
 python tests/test_rag_pipeline.py
 ```
 
-**Output:**
-```
-✅ TEST 1: Text Chunking
-   - Split resume into N chunks
+**Baselines are floors.** Lexical queries pin the machinery at 1.00/1.00;
+semantic ones sit at recall@3 0.50 / precision@1 0.33. Raise them when a change
+earns it, and **never lower one to make a suite pass** — if a change drops a
+score, either the change or the instrument is wrong, and both have happened here.
 
-✅ TEST 2: Vector Store (ChromaDB)
-   - Add chunks to vector store
-   - Retrieve similar documents
+Three traps in that harness, all hit already:
 
-✅ TEST 3: Embedding Service
-   - (Skipped if GEMINI_API_KEY not set)
-   - Generate embeddings for texts
-
-✅ TEST 4: Full RAG Pipeline
-   - (Skipped if GEMINI_API_KEY not set)
-   - Index resume, retrieve context
-```
-
-### Integration Tests
-
-```bash
-pytest tests/test_resume_parser.py -v
-pytest tests/ -v  # All tests
-```
+- The hashing trick needs enough dimensions that collisions do not decide
+  rankings. At 512 for a 229-token vocabulary, a 46-character chunk beat the
+  paragraph that answered the query.
+- Comparisons between pipeline versions must hold the embedder fixed, or they
+  measure collision luck rather than retrieval.
+- **Measurements without the distance cutoff are not reproducible.** A
+  paraphrased query leaves several chunks at cosine distance exactly 1.0, and
+  which of those ties lands in the top 3 varies between processes — the same
+  code scored 0.50 or 0.67 run to run. Any new probe must apply
+  `RAG_MAX_DISTANCE` the way the pipeline does.
 
 ## Troubleshooting
 
-### RAG Not Activating
+Retrieval degrades more quietly than anything else here: off, empty, or broken,
+generation falls back to `resume_text[:4000]` and produces plausible questions
+anyway. The interview works; it is just no longer personalised. `degradation.py`
+does **not** count these — none of them is a provider failure. The `rag` block of
+`GET /health` is where they show.
 
-**Check:**
-1. `GEMINI_API_KEY` is set in `.env`
-2. Resume was parsed successfully (`status=PARSED`)
-3. Backend restarted after setting API key
+| Symptom | Check |
+|---|---|
+| Questions ignore the resume entirely | `rag.enabled`. `false` ⇒ read `disabled_reason`: `no_api_key`, or `init_failed` when `CHROMA_PATH` is unwritable. |
+| `full_text_fallbacks` climbing, `retrievals` flat | Retrieval is never being reached — no resume on the session, or no chunks indexed. |
+| `hits` climbing, `last_best_distance` near 1.0 | Retrieval is reached and returning junk. **A hit is not a success.** |
+| Indexed 30 chunks, embedded 4 | Provider failed mid-run. The produced-vs-embedded gap is recorded in a `finally`; those rows have `embedded_at` NULL and that resume answers from a partial index for ever. Run `reprocess()`. |
+| Every embedding call 404s | Retired embedding model. `GET /v1beta/models`. |
+| `cache_errors` climbing | Redis unreachable. Requests still succeed, at full provider price. |
+| Index empty after a restart | `CHROMA_PATH` is not on a persistent volume. |
+| `'RustBindingsAPI' object has no attribute 'bindings'` | Concurrent cold construction of the Chroma client. The lock in `get_vector_store()` prevents this; if you see it, something built a client around it. |
 
-**Debug:**
-- Check logs: `docker-compose logs backend | grep -i rag`
-- Verify ChromaDB dir exists: `/tmp/interviewpilot/chroma`
+Structured fields all go through `extra=`; `JsonFormatter` emits every
+non-standard record attribute, so nothing needs registering.
 
-### Slow Question Generation
+## Still open
 
-**Cause:** Embedding API latency (usually <2s)
+- **Swappable embedding providers.** A Chroma collection has fixed
+  dimensionality and models disagree (3072 vs 1536 vs 768), so embeddings
+  deliberately do **not** follow `AI_PROVIDER` — switching would raise on the
+  first query against an existing index rather than degrade. Doing it properly
+  means keying the collection name on the model so a switch starts a fresh
+  index, plus re-embedding every resume against 20 requests a day.
+- **Semantic chunking**, and richer indexing strategies (parent-document
+  retrieval, hypothetical questions). Both cost provider calls per document.
+- **Relevance feedback** — nothing currently records whether a retrieved chunk
+  made the question better. `retrieval_metrics` measures reach, not quality; the
+  benchmark measures quality, but offline.
 
-**Solutions:**
-- Check rate limits: Google Cloud Console
-- Cache embeddings for identical resumes
-- Use `gemini-1.5-flash` (default, faster)
-
-### Out of Memory
-
-**Cause:** ChromaDB loading large indices
-
-**Solutions:**
-- Increase container memory: `docker-compose.yml`
-- Reduce chunk size: `TextChunker.chunk_text(chunk_size=300)`
-- Clear old indices: `rm -rf /tmp/interviewpilot/chroma`
-
-## Future Enhancements
-
-1. **Caching**: Reuse embeddings for identical resumes
-2. **Filtering**: Filter questions by skill tags
-3. **Streaming**: Real-time question generation with streaming
-4. **Model Selection**: Support Claude, GPT-4 embeddings
-5. **Semantic Chunking**: Use sentence-transformers for smarter splits
-6. **Indexing Strategies**: Parent-document retrieval, hypothetical questions
-7. **Metrics**: Track question relevance, coverage
+`EnsembleRetriever` was evaluated and declined: it lives in `langchain` proper
+and arrives with langgraph and three of its packages, to replace `fuse()`.
 
 ## References
 
-- **ChromaDB**: https://docs.trychroma.com/
-- **Gemini Embeddings**: https://ai.google.dev/
-- **RAG Pattern**: https://docs.anthropic.com/en/docs/build-a-system#retrieval-augmented-generation
+- [ChromaDB](https://docs.trychroma.com/) · [`langchain-chroma`](https://python.langchain.com/docs/integrations/vectorstores/chroma/)
+- [Gemini embeddings](https://ai.google.dev/gemini-api/docs/embeddings) · [`GET /v1beta/models`](https://generativelanguage.googleapis.com/v1beta/models)
+- [Reciprocal Rank Fusion (Cormack et al., 2009)](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf)
+- [Postgres full-text search](https://www.postgresql.org/docs/current/textsearch.html)

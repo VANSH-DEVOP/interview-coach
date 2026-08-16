@@ -98,22 +98,23 @@ backend/
 │   ├── models/         # SQLAlchemy ORM (9 entities)
 │   ├── schemas/        # Pydantic request/response contracts
 │   ├── services/       # business logic + storage/ + email/ + ai/
-│   │   └── ai/         # 17 modules: generation, evaluation, RAG,
+│   │   └── ai/         # 18 modules: generation, evaluation, RAG,
 │   │                   # chunking, masking, metrics, tracing
 │   ├── repositories/   # all SQL lives here
-│   ├── middleware/     # error envelope, request logging, security headers
+│   ├── middleware/     # error envelope, request logging, metrics, security headers
 │   ├── worker.py       # arq worker: evaluations + cron sweeps
 │   └── main.py         # app factory
-├── alembic/            # 7 migrations
-└── tests/              # 54 files: unit (fakes), API (real Postgres),
+├── alembic/            # 8 migrations
+└── tests/              # 58 files: unit (fakes), API (real Postgres),
                         # integration (real Redis), and a retrieval benchmark
 
 frontend/
 ├── src/
 │   ├── app/            # / · (auth)/login,register · (app)/dashboard,profile,interviews,reports
+│   │   └── api/bff/    # the BFF proxy: every API call, token attached server-side
 │   ├── components/     # ui/ (primitives) · layout/ (sidebar, mobile nav) · shared/
-│   ├── lib/            # api-client (typed, auto-refresh), utils
-│   ├── hooks/          # use-auth
+│   ├── lib/            # api-client (typed, no token handling), bff, question-clock, utils
+│   ├── hooks/          # use-auth, use-dictation, use-speech
 │   ├── types/          # mirrors backend schemas
 │   ├── styles/         # design tokens (teal / black / gray)
 │   └── middleware.ts   # route protection + per-request CSP nonce
@@ -213,8 +214,9 @@ must not produce a green build.
 
 ## 6. The AI pipeline
 
-All of it ships. `backend/AI_INTEGRATION.md` and `backend/RAG_IMPLEMENTATION.md`
-go deeper; `CLAUDE.md` records why each decision was made.
+All of it ships. `backend/AI_INTEGRATION.md` covers configuring and operating the
+provider; `backend/RAG_IMPLEMENTATION.md` covers retrieval in depth; `CLAUDE.md`
+records why each decision was made.
 
 | Piece | Where | Notes |
 |---|---|---|
@@ -226,6 +228,7 @@ go deeper; `CLAUDE.md` records why each decision was made.
 | **Prompt-injection defence** | `ai/untrusted.py` | Resume text and answers are fenced with a per-prompt random nonce. Structural, not phrase matching. |
 | **Object storage** | `services/storage/` | `local` or `s3`. The `s3` backend covers AWS S3, Cloudflare R2, MinIO and Backblaze B2 — same API, different `S3_ENDPOINT_URL`. Tested against MinIO, which needs no account. |
 | **Chat provider** | `ai/providers.py` | `AI_PROVIDER` = gemini / anthropic / openai. The last also covers Groq, Ollama, OpenRouter and vLLM via `AI_BASE_URL`. Anthropic has no JSON mode, so replies are unfenced and extracted rather than assumed. Embeddings stay on Gemini — see `config.py` for why. |
+| **Streaming** | `ai/model_client.py` | `stream_json()` consumes the model with `.astream()` and returns the same parsed JSON, and raises the same `ModelError`, as the buffered call. Off by default (`AI_STREAMING`); wired to `follow_up` only. |
 | **Observability** | `ai/degradation.py`, `ai/call_metrics.py`, `ai/retrieval_metrics.py`, `ai/tracing.py` | Fallback rate, provider latency and token spend, retrieval outcomes; optional LangSmith tracing and Sentry reporting, both off by default and both scrubbed. |
 
 **LangChain is used for the provider transport and the vector store only** —
@@ -237,9 +240,11 @@ The reasoning, and the conditions that would reopen either, are in `goals.md`.
 
 ### Still open
 
-| Integration | Seam | What changes |
+| Gap | Where it is blocked | What it would take |
 |---|---|---|
-| **Streaming responses** | `ai/base.py` needs a second method; `generate_json()` returns parsed JSON and a streaming caller wants tokens | `.astream()` comes free with the LangChain transport |
+| **No HTTP surface for streaming.** `stream_json()` exists and is measured (`first_token_ms`), but nothing streams to a browser, so what it buys today is the measurement. | A `StreamingResponse` body runs *after* the route returns, when the request-scoped session from `get_session` has already been committed and closed. | Persisting a follow-up mid-stream needs a second transaction opened by hand — its own design pass, not a bolt-on. |
+| **Embeddings do not follow `AI_PROVIDER`.** Switching the chat provider is safe; switching the embedding model is not. | A Chroma collection has fixed dimensionality and models disagree (3072 vs 1536 vs 768), so a switch raises on the first query against an existing index rather than degrading. | Key the collection name on the model so a switch starts a fresh index, then re-embed every resume — against 20 provider requests a day. |
+| **Nothing bounds the *account*.** `MAX_RESUMES_PER_USER` and `RATE_LIMIT_INTERVIEW_CREATES` are per user; the Gemini free tier is 20 requests/day for the whole deployment, so N users at 5 interviews each still exhaust it. | Per-user limits cannot express a shared ceiling. | Tracked in `goals.md`. |
 
 ## 7. Security Notes
 

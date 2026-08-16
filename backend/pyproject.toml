@@ -131,25 +131,31 @@ testpaths = ["tests"]
 
 # Coverage is opt-in: `--cov` is deliberately NOT in addopts. Running one test
 # file is the commonest thing a developer does, and measuring the whole
-# application from it would report 8% and fail the threshold below every time.
+# application from it reports ~40% -- importing `app` executes every module's
+# definitions, so the floor is high and almost none of it is that file's doing --
+# which would fail the threshold below every time.
 # CI passes the flag explicitly; locally, `pytest --cov=app` reproduces it.
 
 [tool.coverage.run]
 source = ["app"]
 # Branch coverage as well as line. Measured before switching it on: it moves
-# the total from 92% to 91%, which is close to free, and it is the more
-# meaningful number in a codebase whose defining feature is that every AI path
-# has an `except` that silently swaps in a fallback. A fallback branch nothing
-# ever takes is exactly what this project has shipped before.
+# the total from 92% to 90.4%, which is cheap, and it is the more meaningful
+# number in a codebase whose defining feature is that every AI path has an
+# `except` that silently swaps in a fallback. A fallback branch nothing ever
+# takes is exactly what this project has shipped before.
 branch = true
 
 [tool.coverage.report]
 show_missing = true
-# The threshold is a ratchet against regression, not a target. Measured 91% at
-# the time of writing, so this leaves roughly one point -- about 37 statements
-# -- of slack, which exists for environment drift rather than for new untested
-# code: CI runs Python 3.12 and developers here run 3.13, and coverage of
-# version-conditional code differs between them.
+# The threshold is a ratchet against regression, not a target. Measured 90.36%
+# (768 passed, 9 skipped) on Python 3.13, so this leaves about a third of a
+# point -- roughly 15 statements -- of slack. That slack exists for environment
+# drift rather than for new untested code: CI runs Python 3.12 and developers
+# here run 3.13, and coverage of version-conditional code differs between them.
+#
+# It used to be a full point. It is thinner now because code landed faster than
+# tests did, which means the next untested branch fails the build. That is the
+# ratchet working.
 #
 # Raise it when the measured number rises. Never lower it to make a build pass:
 # that converts the one signal this gives into a record of what was tolerated.
