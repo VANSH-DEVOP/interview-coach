@@ -236,7 +236,9 @@ records why each decision was made.
 LangGraph were evaluated and declined: the first pulls in langgraph and three of
 its packages to replace forty tested lines of rank fusion, and the second has no
 graph to express in a chain with one always-taken call and one conditional one.
-The reasoning, and the conditions that would reopen either, are in `goals.md`.
+Either would be worth reopening on a concrete trigger: `EnsembleRetriever` if a
+third retriever arrives and `fuse()` starts growing cases, LangGraph if the
+generation chain gains a branch that loops or fans out. Neither is true today.
 
 ### Still open
 
@@ -244,7 +246,7 @@ The reasoning, and the conditions that would reopen either, are in `goals.md`.
 |---|---|---|
 | **No HTTP surface for streaming.** `stream_json()` exists and is measured (`first_token_ms`), but nothing streams to a browser, so what it buys today is the measurement. | A `StreamingResponse` body runs *after* the route returns, when the request-scoped session from `get_session` has already been committed and closed. | Persisting a follow-up mid-stream needs a second transaction opened by hand — its own design pass, not a bolt-on. |
 | **Embeddings do not follow `AI_PROVIDER`.** Switching the chat provider is safe; switching the embedding model is not. | A Chroma collection has fixed dimensionality and models disagree (3072 vs 1536 vs 768), so a switch raises on the first query against an existing index rather than degrading. | Key the collection name on the model so a switch starts a fresh index, then re-embed every resume — against 20 provider requests a day. |
-| **Nothing bounds the *account*.** `MAX_RESUMES_PER_USER` and `RATE_LIMIT_INTERVIEW_CREATES` are per user; the Gemini free tier is 20 requests/day for the whole deployment, so N users at 5 interviews each still exhaust it. | Per-user limits cannot express a shared ceiling. | Tracked in `goals.md`. |
+| **Nothing bounds the *account*.** `MAX_RESUMES_PER_USER` and `RATE_LIMIT_INTERVIEW_CREATES` are per user; the Gemini free tier is 20 requests/day for the whole deployment, so N users at 5 interviews each still exhaust it. | Per-user limits cannot express a shared ceiling. | A deployment-wide counter on the existing `rate_limit` mechanism, keyed on nothing and checked before any provider call, so exhaustion degrades everyone to the deterministic path rather than racing to spend the last request. |
 
 ## 7. Security Notes
 

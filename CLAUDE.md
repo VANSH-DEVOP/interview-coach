@@ -221,7 +221,7 @@ Three traps in that harness, all hit already:
 - Comparisons between pipeline versions must hold the embedder fixed, or they measure collision luck rather than retrieval.
 - **Measurements without the distance cutoff are not reproducible.** A paraphrased query leaves several chunks at cosine distance exactly 1.0, and which of those ties lands in the top 3 varies between processes — the same code scored 0.50 or 0.67 run to run. Any new probe added to the benchmark must apply `RAG_MAX_DISTANCE` the way the pipeline does.
 
-Deeper docs: `backend/AI_INTEGRATION.md`, `backend/RAG_IMPLEMENTATION.md`. The six-part production-RAG plan lives in `goals.md`.
+Deeper docs: `backend/AI_INTEGRATION.md`, `backend/RAG_IMPLEMENTATION.md`.
 
 ## Evaluation queue
 
@@ -386,7 +386,7 @@ The quota check runs **before** `storage.save`, not after the row is built — a
 
 `QuotaExceededError` is **429, not 403**, and that is a deliberate choice: `api-client.ts` classifies 401 *and* 403 as `kind === "auth"`, the one failure kind allowed to implicate the session, so a 403 would tell the UI the user's credentials were the problem. The `code` (`quota_exceeded` vs `rate_limited`) is what distinguishes them, because the way out differs — a rate limit clears by waiting, a quota by deleting. `Retry-After` is therefore set only on the interview cap, where waiting genuinely is the answer.
 
-**Neither of these bounds the *account*.** The Gemini free tier is 20 requests/day for the whole deployment, and per-user limits cannot fix that — N users at 5 interviews each still exhaust it. That remains open in `goals.md`.
+**Neither of these bounds the *account*.** The Gemini free tier is 20 requests/day for the whole deployment, and per-user limits cannot fix that — N users at 5 interviews each still exhaust it. **That is still open**, and the shape of the fix is a deployment-wide counter on the same `rate_limit` mechanism, keyed on nothing: one budget, checked before any provider call, so exhaustion degrades everyone to the deterministic path instead of racing to spend the last request.
 
 
 ## Storage
@@ -502,6 +502,6 @@ Four documents describe this repository and they do not overlap. Knowing which a
 | `backend/AI_INTEGRATION.md` | Configuring and operating the provider: keys, models, quota, what degradation looks like from the outside, how to diagnose it. | Retrieval internals. |
 | `backend/RAG_IMPLEMENTATION.md` | Retrieval in depth: chunking, embedding, the vector store, hybrid search, the benchmark. | Anything about the chat provider. |
 
-`goals.md` is the backlog and the bug log, and is where a decision's history lives once it is closed.
+**These four are the whole set. There is no fifth, and that is deliberate.** A backlog and an onboarding plan both lived here and both rotted — the onboarding plan was eventually deleted rather than repaired, because a wrong map is worse than no map. Working notes are kept out of the repository (`.gitignore`); anything durable enough to matter belongs in one of the four above, next to the code it describes.
 
-**Numbers in prose go stale silently, and this has already happened.** `AI_INTEGRATION.md` sat two months behind the code, telling readers to configure `gemini-1.5-flash` — a retired ID whose 404 the fallback layer hides, which is the exact failure `goals.md` records twice — and stating the free tier as 1,500 requests/day when the binding limit is 20. Neither error could produce a test failure. When you change a model ID, a default, a quota, or a count, grep the four docs for it before you commit; `goals.md` carries a standing item for exactly this.
+**Numbers in prose go stale silently, and this has already happened.** `AI_INTEGRATION.md` sat two months behind the code, telling readers to configure `gemini-1.5-flash` — a retired ID whose 404 the fallback layer hides, which is the failure this project has shipped twice — and stating the free tier as 1,500 requests/day when the binding limit is 20. Neither error could produce a test failure. **When you change a model ID, a default, a quota, or a count, grep all four docs for the old value before you commit.** Nothing else will catch it.

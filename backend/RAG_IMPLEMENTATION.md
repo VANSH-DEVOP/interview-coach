@@ -2,28 +2,37 @@
 
 ## Overview
 
-InterviewPilot now implements **Retrieval-Augmented Generation (RAG)** for intelligent interview question generation. When a candidate uploads a resume, the system:
+Questions are generated from what the candidate's resume actually says, rather
+than from the first 4,000 characters of it. When a resume is uploaded:
 
-1. **Parses** the PDF/DOCX into text
-2. **Chunks** the text along its own section headings, and stores the chunks as
-   rows in `resume_chunks`
-3. **Embeds** each chunk using Gemini's embedding API
-4. **Stores** embeddings in ChromaDB vector database
-5. **Retrieves** the most relevant sections when generating questions
-6. **Generates** tailored questions using the retrieved context
+1. **Parse** the PDF/DOCX into text
+2. **Chunk** it along its own section headings, and save the chunks as rows in
+   `resume_chunks` — before embedding, so a provider failure leaves a partial
+   index rather than nothing
+3. **Embed** each chunk, redacted, through the cache
+4. **Store** the vectors in ChromaDB
 
-This ensures questions are **personalized** to the candidate's actual experience, skills, and background.
+and at generation time:
 
-> **Status, 2026-08-10.** The above describes the shipped pipeline, which is a
-> working first version rather than a finished one — dense-only retrieval,
-> fixed-size chunking with a duplicating overlap, one embedding HTTP call per
-> chunk, no caching, no relevance threshold. `goals.md` holds a six-part plan
-> to take it further. **Parts 1 (observability + benchmark), 2 (chunks as rows
-> + structure-aware chunking), 3 (hybrid retrieval), 4 (embedding cache) and
-> 5 (query rewriting + prompt-injection defence) and 6 (multi-step
-> generation) have landed**; see
-> below. **All six parts are complete.** The open item is the LangChain
-> provider layer and LangSmith tracing; see `goals.md`.
+5. **Rewrite** the query down to the terms worth retrieving on — deterministic,
+   no provider call
+6. **Retrieve** through both halves — dense (Chroma) and keyword (Postgres
+   full-text) — and fuse the two rankings
+7. **Generate** from the retrieved chunks, or from `resume_text[:4000]` if
+   retrieval came back empty, which is counted rather than silent
+
+> **Status, 2026-08-16.** All of the above ships. This document was written
+> against the first version — dense-only retrieval, fixed-size chunking with a
+> duplicating overlap, one uncached embedding call per chunk, no relevance
+> threshold — and every one of those has since been replaced: structure-aware
+> chunking with chunks as rows, hybrid retrieval with rank fusion, an embedding
+> cache, a distance cutoff, deterministic query rewriting, prompt-injection
+> fencing, and a multi-step generation chain. Observability and a retrieval
+> benchmark landed alongside them. The transport moved to LangChain
+> (`langchain-chroma`, `langchain-google-genai`) and LangSmith tracing is
+> available and off by default.
+>
+> What is still open is listed at the end of this file, and it is short.
 
 ## Observability
 

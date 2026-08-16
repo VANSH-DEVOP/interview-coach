@@ -4,7 +4,6 @@ How to configure, operate and diagnose the AI provider.
 
 - **Retrieval internals** — chunking, embeddings, the vector store, hybrid search, the benchmark — are in `RAG_IMPLEMENTATION.md`.
 - **Why any of this was decided the way it was** is in the repository root `CLAUDE.md`, which is authoritative when it disagrees with this file.
-- **The backlog and the bug log** are in `goals.md`.
 
 ---
 
@@ -87,7 +86,7 @@ The API and the worker share one image and one configuration, so a key set for o
 
 ## 3. Before you change a model id
 
-**Google retires model ids, and a retired id is a 404 that the fallback layer hides.** This has already broken this project twice — `gemini-1.5-flash` and `models/embedding-001`, the second of which meant RAG had never produced a single embedding, silently, for weeks. Both are recorded in `goals.md`.
+**Google retires model ids, and a retired id is a 404 that the fallback layer hides.** This has already broken this project twice — `gemini-1.5-flash` and `models/embedding-001`, the second of which meant RAG had never produced a single embedding, silently, for weeks.
 
 The failure has no error page. Requests return `201`. Interviews complete. Reports appear. They are simply generic.
 
