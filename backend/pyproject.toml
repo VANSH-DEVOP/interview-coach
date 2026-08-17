@@ -80,8 +80,8 @@ dev = [
     # adds rules, so an unpinned range means CI enforces something a developer's
     # machine does not -- which is exactly how this pipeline first failed
     # (local ruff 0.15 vs CI 0.16, which promoted import sorting to a default).
-    "ruff==0.16.2",
-    "mypy==2.1.0",
+    "ruff==0.16.3",
+    "mypy==2.3.0",
     "pytest-cov>=5.0",
     "pip-audit>=2.7",
 ]
