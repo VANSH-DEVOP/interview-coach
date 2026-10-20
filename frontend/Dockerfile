@@ -1,12 +1,12 @@
 # ---------------------------------------------------------------------------
 # InterviewPilot AI - Frontend (Next.js, standalone output, multi-stage)
 # ---------------------------------------------------------------------------
-FROM node:20-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /srv/frontend
 COPY package.json package-lock.json* ./
 RUN npm install --frozen-lockfile 2>/dev/null || npm install
 
-FROM node:20-alpine AS builder
+FROM node:26-alpine AS builder
 WORKDIR /srv/frontend
 COPY --from=deps /srv/frontend/node_modules ./node_modules
 COPY . .
@@ -15,7 +15,7 @@ ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
     NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-FROM node:20-alpine AS runner
+FROM node:26-alpine AS runner
 WORKDIR /srv/frontend
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1
